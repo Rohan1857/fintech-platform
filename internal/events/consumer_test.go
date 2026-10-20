@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestConsumer_IdempotencyAndNoDuplicateEffects(t *testing.T) {
@@ -148,5 +150,66 @@ func TestConsumer_AllRequiredLifecycleEvents(t *testing.T) {
 		if !handled[evtType] {
 			t.Fatalf("required event type %s was not handled", evtType)
 		}
+	}
+}
+
+func TestConsumer_RealPostgres_IdempotencyAndNoDuplicates(t *testing.T) {
+	dbURL := "postgres://ledger:ledger_password@127.0.0.1:5432/ledger?sslmode=disable"
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect to postgres failed: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping postgres failed: %v", err)
+	}
+
+	_, _ = pool.Exec(ctx, "TRUNCATE TABLE processed_events CASCADE;")
+
+	dlqPub := NewMemPublisher()
+	cfg := ConsumerConfig{
+		Topic:        "payment.events",
+		DLQTopic:     "payment.dlq",
+		GroupID:      "audit-group-pg",
+		MaxRetries:   2,
+		RetryBackoff: 5 * time.Millisecond,
+	}
+
+	consumer := NewConsumer(cfg, pool, dlqPub)
+
+	var execCount atomic.Int32
+	consumer.RegisterHandler(EventPaymentCompleted, func(ctx context.Context, ev Event) error {
+		execCount.Add(1)
+		return nil
+	})
+
+	ev := Event{
+		ID:            "pg_ev_unique_777",
+		Type:          EventPaymentCompleted,
+		AggregateID:   "tx_777",
+		AggregateType: "transfer",
+		CreatedAt:     time.Now().UTC(),
+	}
+
+	// Process 5 times with real postgres backing processed_events
+	for i := 0; i < 5; i++ {
+		if err := consumer.ProcessEvent(ctx, ev); err != nil {
+			t.Fatalf("ProcessEvent failed on iteration %d: %v", i, err)
+		}
+	}
+
+	if execCount.Load() != 1 {
+		t.Fatalf("expected exactly 1 execution against real postgres, got %d", execCount.Load())
+	}
+
+	// Verify row in processed_events table
+	var count int
+	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM processed_events WHERE event_id = $1 AND consumer_group = $2", ev.ID, cfg.GroupID).Scan(&count)
+	if count != 1 {
+		t.Errorf("expected 1 row in processed_events, got %d", count)
 	}
 }

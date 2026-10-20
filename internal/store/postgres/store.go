@@ -67,31 +67,107 @@ func (s *Store) CreateAccount(ctx context.Context, a ledger.Account) error {
 		a.Currency = money.CurrencyINR
 	}
 
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO accounts (id, currency, balance, held, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, NOW(), NOW())
-		ON CONFLICT (id) DO NOTHING`,
-		a.ID, a.Currency, int64(a.Balance), int64(a.Held),
-	)
-	if err != nil {
-		if isCheckViolation(err) {
-			return ledger.ErrInsufficientFunds
+	initBalance := a.Balance
+
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var existingCur string
+		var existingBal, existingHeld int64
+		err := tx.QueryRow(ctx, `SELECT currency, balance, held FROM accounts WHERE id = $1`, a.ID).
+			Scan(&existingCur, &existingBal, &existingHeld)
+		if err == nil {
+			if existingCur != a.Currency || existingBal != int64(initBalance) || existingHeld != int64(a.Held) {
+				return ledger.ErrAccountExists
+			}
+			return nil
 		}
-		return err
-	}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 
-	if tag.RowsAffected() == 1 {
+		now := time.Now().UTC()
+		_, err = tx.Exec(ctx, `
+			INSERT INTO accounts (id, currency, balance, held, created_at, updated_at)
+			VALUES ($1, $2, 0, 0, $3, $3)`,
+			a.ID, a.Currency, now,
+		)
+		if err != nil {
+			if isCheckViolation(err) {
+				return ledger.ErrInsufficientFunds
+			}
+			return err
+		}
+
+		if initBalance > 0 {
+			reserveID := "system_reserve_" + a.Currency
+			_, err = tx.Exec(ctx, `
+				INSERT INTO accounts (id, currency, balance, held, created_at, updated_at)
+				VALUES ($1, $2, 0, 0, $3, $3)
+				ON CONFLICT (id) DO NOTHING`,
+				reserveID, a.Currency, now,
+			)
+			if err != nil {
+				return err
+			}
+
+			tID := newID()
+			entries := []ledger.Entry{
+				{ID: newID(), TransferID: tID, AccountID: reserveID, Amount: -initBalance, CreatedAt: now},
+				{ID: newID(), TransferID: tID, AccountID: a.ID, Amount: initBalance, CreatedAt: now},
+			}
+
+			amtVal := int64(initBalance)
+			_, err = tx.Exec(ctx, `
+				INSERT INTO transfers (id, idempotency_key, from_account_id, to_account_id, amount, currency, status, type, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+				tID, "opening_"+a.ID, reserveID, a.ID, amtVal, a.Currency, string(ledger.StatusPosted), string(ledger.TransferTypeStandard), now,
+			)
+			if err != nil {
+				return err
+			}
+
+			for _, e := range entries {
+				_, err = tx.Exec(ctx, `
+					INSERT INTO entries (id, transfer_id, account_id, amount, created_at)
+					VALUES ($1, $2, $3, $4, $5)`,
+					e.ID, e.TransferID, e.AccountID, int64(e.Amount), e.CreatedAt,
+				)
+				if err != nil {
+					return err
+				}
+			}
+
+			_, err = tx.Exec(ctx, `
+				UPDATE accounts SET balance = balance - $1, updated_at = $2 WHERE id = $3`,
+				amtVal, now, reserveID,
+			)
+			if err != nil {
+				return err
+			}
+
+			_, err = tx.Exec(ctx, `
+				UPDATE accounts SET balance = balance + $1, updated_at = $2 WHERE id = $3`,
+				amtVal, now, a.ID,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		if a.Held > 0 {
+			_, err = tx.Exec(ctx, `
+				UPDATE accounts SET held = $1, updated_at = $2 WHERE id = $3`,
+				int64(a.Held), now, a.ID,
+			)
+			if err != nil {
+				if isCheckViolation(err) {
+					return ledger.ErrInsufficientFunds
+				}
+				return err
+			}
+		}
+
 		return nil
-	}
-
-	existing, err := s.GetAccount(ctx, a.ID)
-	if err != nil {
-		return err
-	}
-	if existing.Currency != a.Currency || existing.Balance != a.Balance || existing.Held != a.Held {
-		return ledger.ErrAccountExists
-	}
-	return nil
+	})
 }
 
 func (s *Store) GetAccount(ctx context.Context, id string) (ledger.Account, error) {
@@ -997,6 +1073,7 @@ func (s *Store) Reconcile(ctx context.Context) (store.ReconciliationReport, erro
 // Helpers
 type dbQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 func (s *Store) readTransferByKeyTx(ctx context.Context, q dbQuerier, key string) (ledger.Transfer, bool, error) {
@@ -1028,7 +1105,7 @@ func (s *Store) readTransferByKeyTx(ctx context.Context, q dbQuerier, key string
 	}
 
 	// Read entries
-	rows, err := s.pool.Query(ctx, `SELECT id, transfer_id, account_id, amount, created_at FROM entries WHERE transfer_id = $1 ORDER BY id`, t.ID)
+	rows, err := q.Query(ctx, `SELECT id, transfer_id, account_id, amount, created_at FROM entries WHERE transfer_id = $1 ORDER BY id`, t.ID)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -1071,7 +1148,7 @@ func (s *Store) readTransferByIDTx(ctx context.Context, q dbQuerier, id string) 
 		t.ParentTransferID = *parentID
 	}
 
-	rows, err := s.pool.Query(ctx, `SELECT id, transfer_id, account_id, amount, created_at FROM entries WHERE transfer_id = $1 ORDER BY id`, t.ID)
+	rows, err := q.Query(ctx, `SELECT id, transfer_id, account_id, amount, created_at FROM entries WHERE transfer_id = $1 ORDER BY id`, t.ID)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {

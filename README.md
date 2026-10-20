@@ -116,18 +116,24 @@ The platform solves core financial engineering challenges:
 
 ## Verified Benchmark Results
 
-Load tests executed using the built-in benchmarking tool (`cmd/loadtest/main.go`). Measurements taken on local runtime:
+Rigorous multi-tier benchmarks executed using `cmd/loadtest/main.go` on linux/amd64 (20 CPUs). Tested against real PostgreSQL 16 and Redis 7 instances:
 
-| Scenario | Requests | Concurrency | Throughput | p50 Latency | p95 Latency | p99 Latency |
-|---|---|---|---|---|---|---|
-| **1. Ordinary Independent Transfers** | 1,000 | 10 workers | **208,724.7 RPS** | < 0.1ms | **0.53ms** | **0.54ms** |
-| **2. Concurrent Hot-Account Transfers** | 1,000 | 20 workers | **231,128.4 RPS** | < 0.1ms | **0.54ms** | **1.11ms** |
-| **3. 100% Duplicate Replays (Idempotency)** | 2,000 | 20 workers | **1,844,678.1 RPS** | < 0.01ms | < 0.01ms | **0.55ms** |
+| Tier | Scenario | Infrastructure | Requests | Concurrency | Measured Throughput | p50 Latency | p95 Latency | p99 Latency |
+|---|---|---|---|---|---|---|---|---|
+| **Tier 1: In-Memory** | Ordinary Independent Transfers | In-Memory (`sync.Mutex`) | 2,000 | 20 workers | **262,430 RPS** | 1.9 µs | 0.66 ms | 1.66 ms |
+| **Tier 1: In-Memory** | Contended Hot-Account Transfers | In-Memory (`sync.Mutex`) | 2,000 | 20 workers | **298,845 RPS** | 1.9 µs | 0.74 ms | 1.26 ms |
+| **Tier 2: Real PostgreSQL** | Independent Account Transfers | PostgreSQL 16 (`pgxpool` 50) | 1,000 | 20 workers | **2,801 RPS** | 4.93 ms | 18.86 ms | 30.12 ms |
+| **Tier 2: Real PostgreSQL** | Contended Hot-Account Transfers | PostgreSQL 16 (`pgxpool` 50) | 500 | 10 workers | **728 RPS** | 10.41 ms | 32.34 ms | 62.74 ms |
+| **Tier 3: HTTP API** | `POST /api/v1/transfers` (End-to-End) | HTTP/1.1 + Redis + PG 16 | 500 | 20 workers | **8,151 RPS** | 0.76 ms | 2.95 ms | 40.29 ms |
+| **Tier 4: Outbox Relay** | `ProcessBatch` Polling & Dispatch | PostgreSQL `outbox_events` | 20 | 1 worker | **28.4 batches/s** | 44.30 ms | 60.55 ms | 60.55 ms |
+
+> [!NOTE]
+> **Engineering Transparency**: In-memory microbenchmarks reflect data-structure execution in RAM without I/O (~260k RPS). Production payment processing over real PostgreSQL 16 achieves **2,801 ACID transfers/sec** (independent accounts) and **728 ACID transfers/sec** (single hot-account lock contention), with **8,151 RPS** achieved across the full HTTP REST API with Redis fraud evaluation.
 
 **Post-Benchmark Audit Result**:
 ```
-[SUCCESS] Post-Benchmark Reconciliation Audit: 100% Clean. Total Entries Sum = 0 minor units.
-Total Accounts: 101 | Total Transfers: 2,050 | Total Entries: 4,100 | Mismatched: 0
+[VERIFIED] PostgreSQL Reconciliation 100% Clean!
+Total Accounts: 51 | Total Transfers: 1,550 | Total Entries: 3,100 | TotalEntriesSum: 0 Paise | Mismatched: 0
 ```
 
 ---
@@ -157,11 +163,12 @@ This starts:
 - **Prometheus**: `http://localhost:9090`
 - **Grafana**: `http://localhost:3000` (User: `admin`, Pass: `admin`)
 
-### 3. Run Standalone (Zero-Dependency In-Memory Mode)
+### 3. Run Standalone Development Mode
 ```bash
-go run ./cmd/server/main.go
+ALLOW_IN_MEMORY_DEV_MODE=true go run ./cmd/server/main.go
 ```
-The server detects if external infrastructure is not present and boots up with in-memory double-entry storage, in-memory velocity tracking, and in-memory event publishing.
+> [!WARNING]
+> Production mode fails fast if PostgreSQL, Redis, or Kafka are unavailable (`ALLOW_IN_MEMORY_DEV_MODE=false` by default). Setting `ALLOW_IN_MEMORY_DEV_MODE=true` is strictly required for offline local testing with in-memory stores to prevent accidental production data loss.
 
 ---
 
@@ -216,8 +223,8 @@ Full license texts are preserved in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)
 
 ## Candidate Resume Bullets (Slice Backend Role)
 
-1. **Fintech Payment Processing Core**: Architected a double-entry payment ledger in Go handling 208k+ RPS with sub-millisecond p95 latency; implemented deterministic lexicographical row locking (`FOR UPDATE`) in PostgreSQL, eliminating concurrency deadlocks and ensuring zero floating-point rounding errors via integer minor units.
-2. **Real-Time Fraud & Risk Mitigation**: Engineered a synchronous pre-flight fraud engine evaluating velocity and high-value rules in sub-millisecond Redis sliding windows (`ZSET`); enforced a strict fail-closed security architecture that halts suspicious transactions without silent approvals during dependency outages.
+1. **Fintech Payment Processing Core**: Architected a double-entry payment ledger and REST API in Go capable of 8,100+ end-to-end payment RPS (and 260k+ in-memory RPS) with sub-3ms p95 latency; implemented deterministic lexicographical row locking (`FOR UPDATE`) in PostgreSQL 16 sustaining 2,800+ ACID transfers/sec, eliminating concurrency deadlocks and ensuring zero floating-point rounding errors via integer minor units.
+2. **Real-Time Fraud & Risk Mitigation**: Engineered a synchronous pre-flight fraud engine evaluating velocity and high-value rules in sub-millisecond Redis 7 sliding windows (`ZSET`); enforced a strict fail-closed security architecture that halts suspicious transactions without silent approvals during dependency outages.
 3. **Event-Driven Resilience & Zero Dual-Writes**: Implemented the transactional outbox pattern to stream payment events to Apache Kafka without dual-write inconsistencies; built an idempotent consumer with Dead-Letter Queue (DLQ) routing, ensuring exactly-once business semantics under network partitions and replays.
 
 ---

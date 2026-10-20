@@ -8,9 +8,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     held BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT accounts_balance_non_negative CHECK (balance >= 0),
+    CONSTRAINT accounts_balance_non_negative CHECK (id LIKE 'system_%' OR balance >= 0),
     CONSTRAINT accounts_held_non_negative CHECK (held >= 0),
-    CONSTRAINT accounts_available_funds CHECK (balance >= held)
+    CONSTRAINT accounts_available_funds CHECK (id LIKE 'system_%' OR balance >= held)
 );
 
 CREATE TABLE IF NOT EXISTS transfers (

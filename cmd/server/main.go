@@ -44,6 +44,7 @@ func main() {
 	dbURL := getEnv("DATABASE_URL", "")
 	redisURL := getEnv("REDIS_URL", "")
 	kafkaBrokersStr := getEnv("KAFKA_BROKERS", "")
+	allowDevMocks, _ := strconv.ParseBool(getEnv("ALLOW_IN_MEMORY_DEV_MODE", "false"))
 
 	var s store.Store
 	var pool *pgxpool.Pool
@@ -51,24 +52,32 @@ func main() {
 	var auditor fraud.AuditStore
 	var publisher events.Publisher
 
-	// 1. Initialize PostgreSQL or In-Memory Store
+	// 1. Initialize PostgreSQL Storage
 	if dbURL != "" {
 		logger.Info("connecting to postgresql", "url", dbURL)
-		var err error
 		poolCtx, poolCancel := context.WithTimeout(ctx, 5*time.Second)
+		var err error
 		pool, err = pgxpool.New(poolCtx, dbURL)
 		poolCancel()
-		if err == nil && pool.Ping(ctx) == nil {
+		if err != nil || pool.Ping(ctx) != nil {
+			if !allowDevMocks {
+				logger.Error("FATAL: PostgreSQL connection failed and ALLOW_IN_MEMORY_DEV_MODE is false", "error", err)
+				os.Exit(1)
+			}
+			logger.Warn("DEV MODE: could not connect to postgresql, falling back to in-memory store", "error", err)
+			s = memstore.New()
+			auditor = fraud.NewMemAuditStore()
+		} else {
 			logger.Info("connected to postgresql successfully")
 			s = postgres.New(pool)
 			auditor = fraud.NewPostgresAuditStore(pool)
-		} else {
-			logger.Warn("could not connect to postgresql, falling back to in-memory store", "error", err)
-			s = memstore.New()
-			auditor = fraud.NewMemAuditStore()
 		}
 	} else {
-		logger.Info("no DATABASE_URL provided, running in-memory mode")
+		if !allowDevMocks {
+			logger.Error("FATAL: DATABASE_URL is required in production mode. Set ALLOW_IN_MEMORY_DEV_MODE=true for local dev.")
+			os.Exit(1)
+		}
+		logger.Warn("DEV MODE: no DATABASE_URL provided, running in-memory mode")
 		s = memstore.New()
 		auditor = fraud.NewMemAuditStore()
 	}
@@ -76,18 +85,33 @@ func main() {
 	// 2. Initialize Redis Velocity Tracker
 	if redisURL != "" {
 		logger.Info("connecting to redis", "addr", redisURL)
-		rClient := redis.NewClient(&redis.Options{
-			Addr:        redisURL,
-			DialTimeout: 2 * time.Second,
-		})
-		if rClient.Ping(ctx).Err() == nil {
+		var rOpts *redis.Options
+		if parsedOpts, err := redis.ParseURL(redisURL); err == nil {
+			rOpts = parsedOpts
+		} else {
+			rOpts = &redis.Options{
+				Addr: redisURL,
+			}
+		}
+		rOpts.DialTimeout = 2 * time.Second
+		rClient := redis.NewClient(rOpts)
+		if err := rClient.Ping(ctx).Err(); err != nil {
+			if !allowDevMocks {
+				logger.Error("FATAL: Redis connection failed and ALLOW_IN_MEMORY_DEV_MODE is false", "error", err)
+				os.Exit(1)
+			}
+			logger.Warn("DEV MODE: could not connect to redis, falling back to in-memory tracker", "error", err)
+			tracker = fraud.NewMemVelocityTracker()
+		} else {
 			logger.Info("connected to redis successfully")
 			tracker = fraud.NewRedisVelocityTracker(rClient)
-		} else {
-			logger.Warn("could not connect to redis, falling back to in-memory tracker")
-			tracker = fraud.NewMemVelocityTracker()
 		}
 	} else {
+		if !allowDevMocks {
+			logger.Error("FATAL: REDIS_URL is required in production mode. Set ALLOW_IN_MEMORY_DEV_MODE=true for local dev.")
+			os.Exit(1)
+		}
+		logger.Warn("DEV MODE: no REDIS_URL provided, using in-memory velocity tracker")
 		tracker = fraud.NewMemVelocityTracker()
 	}
 
@@ -97,7 +121,11 @@ func main() {
 		logger.Info("initializing kafka publisher", "brokers", brokers)
 		publisher = events.NewKafkaPublisher(brokers)
 	} else {
-		logger.Info("running in-memory event publisher")
+		if !allowDevMocks {
+			logger.Error("FATAL: KAFKA_BROKERS is required in production mode. Set ALLOW_IN_MEMORY_DEV_MODE=true for local dev.")
+			os.Exit(1)
+		}
+		logger.Warn("DEV MODE: no KAFKA_BROKERS provided, using in-memory event publisher")
 		publisher = events.NewMemPublisher()
 	}
 

@@ -64,8 +64,9 @@ func (r *RedisVelocityTracker) GetVelocity(ctx context.Context, accountID string
 	cutoff := float64(now.Add(-window).UnixMilli())
 	acctKey := fmt.Sprintf("velocity:acct:%s", accountID)
 
-	// Prune old entries outside window
-	_ = r.client.ZRemRangeByScore(ctx, acctKey, "-inf", fmt.Sprintf("(%f", cutoff)).Err()
+	// Prune old entries outside maximum retention window (2 hours), preserving multi-window queries
+	maxRetentionCutoff := float64(now.Add(-2 * time.Hour).UnixMilli())
+	_ = r.client.ZRemRangeByScore(ctx, acctKey, "-inf", fmt.Sprintf("(%f", maxRetentionCutoff)).Err()
 
 	// Fetch recent entries
 	entries, err := r.client.ZRangeByScore(ctx, acctKey, &redis.ZRangeBy{
