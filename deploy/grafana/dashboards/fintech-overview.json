@@ -1,0 +1,112 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Payment Throughput (RPS)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(payment_requests_total[1m])) by (operation)",
+          "legendFormat": "{{operation}} rps"
+        }
+      ]
+    },
+    {
+      "title": "Payment Latency (p50, p95, p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(payment_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50 latency (s)"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(payment_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95 latency (s)"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(payment_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99 latency (s)"
+        }
+      ]
+    },
+    {
+      "title": "Successful vs Failed Transactions",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(payment_requests_total{status=\"success\"}[1m]))",
+          "legendFormat": "Success"
+        },
+        {
+          "expr": "sum(rate(payment_requests_total{status!=\"success\"}[1m]))",
+          "legendFormat": "Failed / Rejected"
+        }
+      ]
+    },
+    {
+      "title": "Fraud Decisions & Rejection Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(fraud_evaluations_total[1m])) by (decision)",
+          "legendFormat": "{{decision}}"
+        }
+      ]
+    },
+    {
+      "title": "Outbox Backlog (Unpublished Events)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        {
+          "expr": "outbox_backlog",
+          "legendFormat": "Pending Events"
+        }
+      ]
+    },
+    {
+      "title": "Kafka Consumer Lag & Throughput",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum(rate(kafka_messages_processed_total[1m])) by (topic)",
+          "legendFormat": "Consumed {{topic}}"
+        },
+        {
+          "expr": "sum(kafka_consumer_lag) by (topic)",
+          "legendFormat": "Lag {{topic}}"
+        }
+      ]
+    },
+    {
+      "title": "Database Transaction Failures",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "sum(rate(db_transaction_errors_total[1m])) by (error_type)",
+          "legendFormat": "DB Error: {{error_type}}"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["fintech", "slice", "payments", "fraud"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "utc",
+  "title": "Fintech Platform - Payments & Fraud Overview",
+  "uid": "fintech-payments-overview",
+  "version": 1
+}
