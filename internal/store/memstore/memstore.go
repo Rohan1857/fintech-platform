@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,14 +85,60 @@ func (s *MemStore) CreateAccount(_ context.Context, a ledger.Account) error {
 		return ledger.ErrAccountExists
 	}
 
-	if a.Balance < 0 || a.Held < 0 || a.Balance < a.Held {
-		return ledger.ErrInsufficientFunds
-	}
+	initBalance := a.Balance
+	a.Balance = 0
+	a.Held = 0
 
 	t := s.now()
 	a.CreatedAt = t
 	a.UpdatedAt = t
 	s.accounts[a.ID] = a
+
+	if initBalance > 0 {
+		reserveID := "system_reserve_" + a.Currency
+		if _, ok := s.accounts[reserveID]; !ok {
+			s.accounts[reserveID] = ledger.Account{
+				ID:        reserveID,
+				Currency:  a.Currency,
+				Balance:   0,
+				Held:      0,
+				CreatedAt: t,
+				UpdatedAt: t,
+			}
+		}
+
+		tID := newID()
+		entries := []ledger.Entry{
+			{ID: newID(), TransferID: tID, AccountID: reserveID, Amount: -initBalance, CreatedAt: t},
+			{ID: newID(), TransferID: tID, AccountID: a.ID, Amount: initBalance, CreatedAt: t},
+		}
+		openTx := ledger.Transfer{
+			ID:             tID,
+			IdempotencyKey: "opening_" + a.ID,
+			FromAccountID:  reserveID,
+			ToAccountID:    a.ID,
+			Amount:         initBalance,
+			Currency:       a.Currency,
+			Status:         ledger.StatusPosted,
+			Type:           ledger.TransferTypeStandard,
+			CreatedAt:      t,
+			Entries:        entries,
+		}
+
+		resAcct := s.accounts[reserveID]
+		resAcct.Balance -= initBalance
+		s.accounts[reserveID] = resAcct
+
+		a.Balance += initBalance
+		s.accounts[a.ID] = a
+
+		s.transfers[tID] = openTx
+		s.entries[reserveID] = append(s.entries[reserveID], entries[0])
+		s.entries[a.ID] = append(s.entries[a.ID], entries[1])
+		s.allEntries[entries[0].ID] = entries[0]
+		s.allEntries[entries[1].ID] = entries[1]
+	}
+
 	return nil
 }
 
@@ -168,6 +215,9 @@ func (s *MemStore) ApplyPosting(_ context.Context, req ledger.PostRequest) (ledg
 
 	// Invariant check: Check aggregated balance impacts against available balances
 	for acctID, netDelta := range aggregated {
+		if strings.HasPrefix(acctID, "system_") {
+			continue // System reserve/equity accounts can absorb issuance debits
+		}
 		a := s.accounts[acctID]
 		newBalance := a.Balance + netDelta
 		if newBalance < 0 || newBalance < a.Held {

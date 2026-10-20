@@ -1,0 +1,264 @@
+openapi: 3.0.3
+info:
+  title: Fintech Payment Processing & Real-Time Fraud Detection Platform
+  description: High-throughput, double-entry transactional payment ledger with synchronous fraud engine, Redis velocity tracking, and Kafka event streaming.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local Docker / Development server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+
+  /api/v1/accounts:
+    post:
+      summary: Create wallet/account
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  example: "user_wallet_100"
+                currency:
+                  type: string
+                  default: "INR"
+                  example: "INR"
+                initial_balance:
+                  type: integer
+                  description: Amount in minor units (paise)
+                  example: 100000
+      responses:
+        '201':
+          description: Account created successfully
+        '409':
+          description: Account already exists
+
+  /api/v1/accounts/{id}:
+    get:
+      summary: Get account balance and details
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Account retrieved
+        '404':
+          description: Account not found
+
+  /api/v1/accounts/{id}/history:
+    get:
+      summary: Get account ledger entries
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Entry history retrieved
+
+  /api/v1/transfers:
+    post:
+      summary: Execute direct double-entry transfer with fraud evaluation
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_account_id, to_account_id, amount]
+              properties:
+                from_account_id:
+                  type: string
+                to_account_id:
+                  type: string
+                amount:
+                  type: integer
+                  description: Minor units (paise)
+                currency:
+                  type: string
+                  default: "INR"
+      responses:
+        '200':
+          description: Transfer executed successfully
+        '403':
+          description: Rejected by fraud detection engine
+        '409':
+          description: Idempotency conflict
+
+  /api/v1/payments/authorize:
+    post:
+      summary: Place authorization hold on funds
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_account_id, to_account_id, amount]
+              properties:
+                from_account_id:
+                  type: string
+                to_account_id:
+                  type: string
+                amount:
+                  type: integer
+                currency:
+                  type: string
+                  default: "INR"
+                expires_in_sec:
+                  type: integer
+                  example: 3600
+      responses:
+        '201':
+          description: Authorization hold created
+
+  /api/v1/payments/capture:
+    post:
+      summary: Settle authorization hold (full or partial)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hold_id, amount]
+              properties:
+                hold_id:
+                  type: string
+                amount:
+                  type: integer
+      responses:
+        '200':
+          description: Hold settled and transfer posted
+
+  /api/v1/payments/void:
+    post:
+      summary: Cancel/void active hold without moving funds
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hold_id]
+              properties:
+                hold_id:
+                  type: string
+      responses:
+        '200':
+          description: Hold voided and funds released
+
+  /api/v1/payments/refund:
+    post:
+      summary: Refund settled transfer (full or partial reversal)
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transfer_id]
+              properties:
+                transfer_id:
+                  type: string
+                amount:
+                  type: integer
+                  description: 0 for full refund
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Refund processed and reverse entries posted
+
+  /api/v1/fraud/evaluations/{id}:
+    get:
+      summary: Fetch fraud evaluation decision audit record
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Fraud evaluation retrieved
+
+  /api/v1/reconciliation:
+    post:
+      summary: Administrative double-entry ledger balance audit
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Ledger is fully balanced and conserved
+        '409':
+          description: Reconciliation discrepancies detected
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
