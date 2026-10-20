@@ -176,21 +176,21 @@ func (s *Server) HandleTransfer(w http.ResponseWriter, r *http.Request) {
 		}
 		if evalRes.Decision == fraud.DecisionReject {
 			writeJSON(w, http.StatusForbidden, map[string]any{
-				"error":          "transaction rejected by fraud risk engine",
-				"evaluation_id":  evalRes.EvaluationID,
-				"decision":       evalRes.Decision,
-				"risk_score":     evalRes.RiskScore,
-				"reasons":        evalRes.Reasons,
+				"error":         "transaction rejected by fraud risk engine",
+				"evaluation_id": evalRes.EvaluationID,
+				"decision":      evalRes.Decision,
+				"risk_score":    evalRes.RiskScore,
+				"reasons":       evalRes.Reasons,
 			})
 			return
 		}
 		if evalRes.Decision == fraud.DecisionReview {
 			writeJSON(w, http.StatusAccepted, map[string]any{
-				"status":         "pending_review",
-				"evaluation_id":  evalRes.EvaluationID,
-				"decision":       evalRes.Decision,
-				"risk_score":     evalRes.RiskScore,
-				"reasons":        evalRes.Reasons,
+				"status":        "pending_review",
+				"evaluation_id": evalRes.EvaluationID,
+				"decision":      evalRes.Decision,
+				"risk_score":    evalRes.RiskScore,
+				"reasons":       evalRes.Reasons,
 			})
 			return
 		}

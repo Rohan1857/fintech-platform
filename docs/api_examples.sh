@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="http://localhost:8080"
+BASE_URL="${BASE_URL:-http://localhost:8090}"
 TOKEN="slice-secret-token-2026"
 AUTH_HEADER="Authorization: Bearer ${TOKEN}"
 

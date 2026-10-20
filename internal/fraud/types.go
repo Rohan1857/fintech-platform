@@ -50,35 +50,35 @@ type EvaluationResult struct {
 
 // Config configures fraud engine thresholds and failure policy.
 type Config struct {
-	ReviewThreshold            float64     `json:"review_threshold"`              // e.g. 50.0
-	RejectThreshold            float64     `json:"reject_threshold"`              // e.g. 80.0
-	HighValueThresholdMinor    money.Money `json:"high_value_threshold_minor"`    // e.g. 5,000,000 paise (50,000 INR)
-	CriticalValueThresholdMinor money.Money `json:"critical_value_threshold_minor"` // e.g. 20,000,000 paise (200,000 INR)
-	VelocityWindowShort        time.Duration `json:"velocity_window_short"`       // e.g. 1 minute
-	VelocityWindowMedium       time.Duration `json:"velocity_window_medium"`      // e.g. 5 minutes
-	VelocityMaxCountShort      int64       `json:"velocity_max_count_short"`      // e.g. 3 transactions
-	VelocityMaxCountMedium     int64       `json:"velocity_max_count_medium"`     // e.g. 5 transactions
-	VelocityMaxAmountMedium    money.Money `json:"velocity_max_amount_medium"`    // e.g. 20,000,000 paise
-	BeneficiaryMaxCountShort   int64       `json:"beneficiary_max_count_short"`   // e.g. 3 rapid payments
-	FailClosed                 bool        `json:"fail_closed"`                   // True: Reject/Review on error. Never silently approve.
-	FallbackDecisionOnError    Decision    `json:"fallback_decision_on_error"`    // REJECT or REVIEW
+	ReviewThreshold             float64       `json:"review_threshold"`               // e.g. 50.0
+	RejectThreshold             float64       `json:"reject_threshold"`               // e.g. 80.0
+	HighValueThresholdMinor     money.Money   `json:"high_value_threshold_minor"`     // e.g. 5,000,000 paise (50,000 INR)
+	CriticalValueThresholdMinor money.Money   `json:"critical_value_threshold_minor"` // e.g. 20,000,000 paise (200,000 INR)
+	VelocityWindowShort         time.Duration `json:"velocity_window_short"`          // e.g. 1 minute
+	VelocityWindowMedium        time.Duration `json:"velocity_window_medium"`         // e.g. 5 minutes
+	VelocityMaxCountShort       int64         `json:"velocity_max_count_short"`       // e.g. 3 transactions
+	VelocityMaxCountMedium      int64         `json:"velocity_max_count_medium"`      // e.g. 5 transactions
+	VelocityMaxAmountMedium     money.Money   `json:"velocity_max_amount_medium"`     // e.g. 20,000,000 paise
+	BeneficiaryMaxCountShort    int64         `json:"beneficiary_max_count_short"`    // e.g. 3 rapid payments
+	FailClosed                  bool          `json:"fail_closed"`                    // True: Reject/Review on error. Never silently approve.
+	FallbackDecisionOnError     Decision      `json:"fallback_decision_on_error"`     // REJECT or REVIEW
 }
 
 // DefaultConfig returns balanced fintech fraud parameters.
 func DefaultConfig() Config {
 	return Config{
-		ReviewThreshold:            50.0,
-		RejectThreshold:            80.0,
-		HighValueThresholdMinor:    5000000,  // 50,000 INR
+		ReviewThreshold:             50.0,
+		RejectThreshold:             80.0,
+		HighValueThresholdMinor:     5000000,  // 50,000 INR
 		CriticalValueThresholdMinor: 25000000, // 250,000 INR
-		VelocityWindowShort:        1 * time.Minute,
-		VelocityWindowMedium:       5 * time.Minute,
-		VelocityMaxCountShort:      4,
-		VelocityMaxCountMedium:     8,
-		VelocityMaxAmountMedium:    20000000, // 200,000 INR
-		BeneficiaryMaxCountShort:   3,
-		FailClosed:                 true,
-		FallbackDecisionOnError:    DecisionReject,
+		VelocityWindowShort:         1 * time.Minute,
+		VelocityWindowMedium:        5 * time.Minute,
+		VelocityMaxCountShort:       4,
+		VelocityMaxCountMedium:      8,
+		VelocityMaxAmountMedium:     20000000, // 200,000 INR
+		BeneficiaryMaxCountShort:    3,
+		FailClosed:                  true,
+		FallbackDecisionOnError:     DecisionReject,
 	}
 }
 

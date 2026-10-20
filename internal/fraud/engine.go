@@ -50,9 +50,9 @@ func (m *MemAuditStore) GetEvaluation(_ context.Context, id string) (EvaluationR
 
 // Engine performs synchronous pre-flight fraud analysis.
 type Engine struct {
-	cfg      Config
-	tracker  VelocityTracker
-	auditor  AuditStore
+	cfg     Config
+	tracker VelocityTracker
+	auditor AuditStore
 }
 
 func NewEngine(cfg Config, tracker VelocityTracker, auditor AuditStore) *Engine {

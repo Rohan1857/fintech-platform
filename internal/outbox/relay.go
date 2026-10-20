@@ -11,11 +11,11 @@ import (
 
 // Config configures outbox relay polling and retry policies.
 type Config struct {
-	PollInterval    time.Duration
-	BatchSize       int
-	MaxRetries      int
-	TopicEvents     string
-	TopicDLQ        string
+	PollInterval time.Duration
+	BatchSize    int
+	MaxRetries   int
+	TopicEvents  string
+	TopicDLQ     string
 }
 
 func DefaultConfig() Config {

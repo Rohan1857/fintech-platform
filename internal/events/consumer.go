@@ -17,23 +17,23 @@ type EventHandler func(ctx context.Context, ev Event) error
 
 // ConsumerConfig configures Kafka reader and processing behavior.
 type ConsumerConfig struct {
-	Brokers       []string
-	Topic         string
-	DLQTopic      string
-	GroupID       string
-	MaxRetries    int
-	RetryBackoff  time.Duration
+	Brokers      []string
+	Topic        string
+	DLQTopic     string
+	GroupID      string
+	MaxRetries   int
+	RetryBackoff time.Duration
 }
 
 // Consumer implements idempotent event processing from Kafka with dead-letter routing.
 type Consumer struct {
-	cfg        ConsumerConfig
-	pool       *pgxpool.Pool
-	dlqPub     Publisher
-	handlers   map[string]EventHandler
-	processed  map[string]bool // In-memory fallback if pool is nil
-	mu         sync.Mutex
-	reader     *kafka.Reader
+	cfg       ConsumerConfig
+	pool      *pgxpool.Pool
+	dlqPub    Publisher
+	handlers  map[string]EventHandler
+	processed map[string]bool // In-memory fallback if pool is nil
+	mu        sync.Mutex
+	reader    *kafka.Reader
 }
 
 func NewConsumer(cfg ConsumerConfig, pool *pgxpool.Pool, dlqPub Publisher) *Consumer {
