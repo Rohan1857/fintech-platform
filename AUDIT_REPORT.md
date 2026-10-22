@@ -1,6 +1,7 @@
 # Local verification report
 
-**Date:** 22 October 2026
+**Initial verification:** 22 October 2026
+**Latest follow-up:** 23 October 2026
 **Scope:** portfolio correctness regressions, test isolation, reproducible demo, and benchmark reporting
 **Environment:** WSL2 Ubuntu 24.04, Linux amd64, 20 reported logical CPUs; Go 1.26.0; PostgreSQL 16.15; Redis 7.0.15
 
@@ -71,7 +72,45 @@ The old **8,151 HTTP RPS** result is withdrawn. Its request omitted `Idempotency
 - Live Kafka broker publishing, rebalancing, crash recovery, or exactly-once handler effects. Publisher adapters were used in outbox tests and the live demo.
 - A running full Docker Compose stack. Docker's Linux engine pipe was unavailable in this session; PostgreSQL and Redis ran natively in WSL instead.
 - Production security, tenant/account authorization, financial arithmetic overflow protection, bank/card integration, or a compliance audit guarantee.
-- Durable review/approval workflow, scheduled hold expiry, uniform idempotency semantics for every operation, or atomic fraud reservations across concurrent new intents.
+- Durable review/approval workflow, uniform idempotency semantics for every operation, or atomic fraud reservations across concurrent new intents.
 - Sustained capacity, multi-instance rate limiting, readiness/recovery, backup/restore, or fault tolerance under real network partitions.
 
 See [the design's next decisions](docs/architecture.md#boundaries-and-next-decisions) for the corresponding implementation milestones. The demonstrated scope is a testable payment backend and an explicit engineering case study.
+
+## Account and expiry follow-up: 23 October 2026
+
+The five issues raised in the subsequent review were reproduced before correction. Additional coverage now checks:
+
+- Expired capture commits its reservation release before returning the domain expiry outcome. A settled balance is not debited.
+- Three expired holds on one account release their summed amount; live holds remain reserved. Returned counts represent holds, not accounts.
+- Expiry includes the exact deadline in both stores. Concurrent sweeps and competing expired-capture requests release funds once.
+- Negative initial balances and client-supplied `system_` identities are rejected without account creation. Zero initial balance remains valid.
+- Public transfers, authorizations, captures, and refunds cannot move internal reserve funds, including legacy reserve holds and the API committed-replay path.
+- PostgreSQL constraints reject the former `systemX...` wildcard bypass and mismatched reserve identities while preserving internal opening entries.
+- Missing authentication and the former published demo token fail server startup. Default router configuration cannot authenticate that token. Compose refuses a missing token; demos require explicit credentials.
+- The expiry worker releases untouched holds at startup and on later ticks, then stops on cancellation before the database pool is closed.
+
+Verification commands passed against a disposable PostgreSQL database, `fintech_safety_clean_test_20261023`, and an isolated Redis process on port 16381:
+
+```text
+go test -race -p 1 -count=1 -timeout 5m ./...  PASS
+go vet ./...                                PASS
+go build ./cmd/server ./cmd/demo ./cmd/loadtest  PASS
+gofmt -l .                                  no files listed
+```
+
+The Bash and PowerShell demos passed against real PostgreSQL and Redis with an explicitly configured private test token. A one-second authorization was left untouched; the running service released it on its periodic sweep, with unchanged settled balances and clean reconciliation. The event publisher remained an in-process adapter; this does not establish live Kafka behavior.
+
+A Windows checkout initially gave the Bash wrapper CRLF endings, causing `pipefail` to fail. The wrapper was normalized and `.gitattributes` now enforces LF for shell and Go sources; the rerun passed.
+
+The fresh schema and upgrade migration were both tested. On a separate database created with the previous schema, the upgrade preserved a valid ledger with two transfers, entry sum zero, and total account balance zero. On a disposable fixture containing invalid legacy system accounts, migration 000002 refused the rows and rolled back its constraint changes. **No existing application database was migrated, and no legacy account data was deleted or silently repaired.** CI applies all upward migrations in filename order; existing Compose volumes require explicit upgrade.
+
+A further short benchmark run completed all workloads with zero failures and clean reconciliation:
+
+| Scenario | Completed | Failed | Completed/s | p50 | p95 | p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| PostgreSQL wallet cycle | 1,000 | 0 | 2,628.9 | 6.54 ms | 16.70 ms | 24.84 ms |
+| PostgreSQL hot sender | 500 | 0 | 552.7 | 12.63 ms | 52.25 ms | 81.18 ms |
+| HTTP + auth + Redis risk + PostgreSQL | 500 | 0 | 2,438.3 | 7.36 ms | 10.41 ms | 25.18 ms |
+
+This is another local sample, not a controlled performance comparison with the earlier run. The remaining production boundaries listed above still apply.

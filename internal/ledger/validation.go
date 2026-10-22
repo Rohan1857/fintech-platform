@@ -2,9 +2,31 @@ package ledger
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Rohan1857/fintech-platform/pkg/money"
 )
+
+// ValidatePublicAccountID keeps internal accounting identities out of client mutations.
+func ValidatePublicAccountID(id string) error {
+	if id == "" {
+		return ErrAccountNotFound
+	}
+	if strings.HasPrefix(id, "system_") {
+		return ErrReservedAccount
+	}
+	return nil
+}
+
+func ValidateNewAccount(a Account) error {
+	if err := ValidatePublicAccountID(a.ID); err != nil {
+		return err
+	}
+	if a.Balance < 0 {
+		return ErrInvalidInitialBalance
+	}
+	return nil
+}
 
 // AssertBalanced verifies the fundamental double-entry invariant:
 // 1. Must have at least two legs.
@@ -35,8 +57,8 @@ func AggregatePostings(postings []Posting) (map[string]money.Money, error) {
 		if p.Amount == 0 {
 			return nil, ErrZeroPosting
 		}
-		if p.AccountID == "" {
-			return nil, ErrAccountNotFound
+		if err := ValidatePublicAccountID(p.AccountID); err != nil {
+			return nil, err
 		}
 		aggregated[p.AccountID] += p.Amount
 		total += p.Amount

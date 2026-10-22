@@ -178,8 +178,9 @@ func main() {
 		baseURL = "http://localhost:8090"
 	}
 	token := os.Getenv("API_AUTH_TOKEN")
-	if token == "" {
-		token = "slice-secret-token-2026"
+	if strings.TrimSpace(token) == "" {
+		fmt.Fprintln(os.Stderr, "FAIL: set API_AUTH_TOKEN to the private token configured on the server")
+		os.Exit(1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

@@ -10,6 +10,7 @@ services:
       - "5432:5432"
     volumes:
       - ./migrations/000001_init_schema.up.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./migrations/000002_restrict_system_accounts.up.sql:/docker-entrypoint-initdb.d/02_restrict_system_accounts.sql:ro
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ledger -d ledger"]
@@ -66,7 +67,7 @@ services:
       - KAFKA_PAYMENT_TOPIC=payment.events
       - KAFKA_DLQ_TOPIC=payment.dlq
       - KAFKA_CONSUMER_GROUP=payment-processor-group
-      - API_AUTH_TOKEN=slice-secret-token-2026
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN:?Set a private API_AUTH_TOKEN before starting Compose}
       - FRAUD_FAIL_CLOSED=true
     depends_on:
       postgres:

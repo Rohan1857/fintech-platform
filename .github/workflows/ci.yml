@@ -54,7 +54,9 @@ jobs:
           PGPASSWORD: ledger_password
         run: |
           sudo apt-get install -y postgresql-client
-          psql -h 127.0.0.1 -U ledger -d ledger -f migrations/000001_init_schema.up.sql
+          for migration in migrations/*.up.sql; do
+            psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U ledger -d ledger -f "$migration"
+          done
 
       - name: Check Code Formatting (gofmt)
         run: |

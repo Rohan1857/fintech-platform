@@ -13,7 +13,7 @@ Acceptance criteria for this local testbed:
 5. REVIEW and REJECT assessments create no holds or transfers. Configured fail-closed dependency failures, including velocity writes, stop new funds mutations.
 6. Events for implemented ledger mutations are inserted in the same PostgreSQL transaction; broker availability is outside that transaction.
 
-The system uses a single trusted service credential. It does not model customers, merchant ownership, KYC, card networks, or bank settlement. Initial wallet funding is a demo/admin capability with matching opening entries against a currency reserve account.
+The system requires one explicitly configured private service credential. Missing credentials and the former published demo token fail startup; router defaults contain no authentication token. Public account creation rejects negative balances and the reserved `system_` namespace. Public payment mutations cannot use internal reserve accounts. SQL permits the negative-balance exception only for the exact `system_reserve_<currency>` identity. It does not model customers, merchant ownership, KYC, card networks, or bank settlement. Initial wallet funding is a demo/admin capability with matching opening entries against a currency reserve account.
 
 ## Financial invariants
 
@@ -49,7 +49,9 @@ The API replay lookup does not replace transactional idempotency: concurrent fir
 
 Capture locks the hold before reading its committed capture result. A replay must match the amount and the hold's `capture_transfer_id`. Refunds lock their original transfer while checking prior refunds.
 
-Expiry is represented in the hold model, but the service entrypoint does not schedule `ExpireHolds`. PostgreSQL rejects an expired capture; returning that error rolls back its attempted expiry update, leaving reservation release to a successful sweep. Automatic expiry cleanup is not established by current service wiring.
+The server runs `ExpireHolds` on startup and every 30 seconds, and waits for that worker to stop before closing the database pool. A hold expires when its deadline is reached. The PostgreSQL sweep sums all expired reservations per account, updates balances in the same statement, and returns a count of expired holds. Concurrent sweeps/capture attempts are covered by shared store tests.
+
+An expired capture commits its hold-status change and reservation release first, then returns `ErrHoldExpired`. SQL or commit failures remain errors; they cannot be reported as a successfully persisted expiry. Settled balances are unchanged by release.
 
 ## Risk is an assessment, not a reservation
 
@@ -94,8 +96,8 @@ A live Kafka broker was not used in the latest local verification. Outbox tests 
 
 Before real funds or untrusted multi-user access, prioritize:
 
-1. **Financial input and identity boundaries:** checked arithmetic, strict identifiers and reserve-account isolation, funding permissions, account ownership, bounded JSON, and secret handling.
-2. **Complete lifecycle contracts:** durable review state, scheduled expiry, uniform retry matching for expiry/void/refund semantics, and cross-operation key policy. Keys currently live in operation-specific tables, not one global intent namespace.
+1. **Financial input and identity boundaries:** checked arithmetic, broader identifier validation, funding permissions, account ownership, bounded JSON, and secret handling.
+2. **Complete lifecycle contracts:** durable review state, uniform retry matching for expiry/void/refund semantics, and cross-operation key policy. Keys currently live in operation-specific tables, not one global intent namespace.
 3. **Consequential event delivery:** atomic handler/inbox effects, explicit offset/DLQ failure behavior, crash-window tests against live Kafka.
 4. **Operational proof:** dependency readiness, distributed rate limiting, retention, worker shutdown, sustained load, backup and restore.
 

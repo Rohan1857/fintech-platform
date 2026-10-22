@@ -151,6 +151,8 @@ type RefundRequest struct {
 // Sentinel Domain Errors
 var (
 	ErrInvalidAmount         = errors.New("ledger: amount must be positive")
+	ErrInvalidInitialBalance = errors.New("ledger: initial balance must be non-negative")
+	ErrReservedAccount       = errors.New("ledger: system accounts are reserved for internal accounting")
 	ErrSameAccount           = errors.New("ledger: source and destination must differ")
 	ErrMissingIdempotencyKey = errors.New("ledger: idempotency key is required")
 	ErrAccountNotFound       = errors.New("ledger: account not found")

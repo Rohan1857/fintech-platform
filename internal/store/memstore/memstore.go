@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -70,8 +68,8 @@ func (s *MemStore) CreateAccount(_ context.Context, a ledger.Account) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if a.ID == "" {
-		return fmt.Errorf("account id required")
+	if err := ledger.ValidateNewAccount(a); err != nil {
+		return err
 	}
 	if a.Currency == "" {
 		a.Currency = money.CurrencyINR
@@ -215,9 +213,6 @@ func (s *MemStore) ApplyPosting(_ context.Context, req ledger.PostRequest) (ledg
 
 	// Invariant check: Check aggregated balance impacts against available balances
 	for acctID, netDelta := range aggregated {
-		if strings.HasPrefix(acctID, "system_") {
-			continue // System reserve/equity accounts can absorb issuance debits
-		}
 		a := s.accounts[acctID]
 		newBalance := a.Balance + netDelta
 		if newBalance < 0 || newBalance < a.Held {
@@ -282,6 +277,11 @@ func (s *MemStore) ApplyPosting(_ context.Context, req ledger.PostRequest) (ledg
 }
 
 func (s *MemStore) AuthorizeHold(_ context.Context, req ledger.AuthorizeRequest) (ledger.Hold, error) {
+	for _, id := range []string{req.FromAccountID, req.ToAccountID} {
+		if err := ledger.ValidatePublicAccountID(id); err != nil {
+			return ledger.Hold{}, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -376,11 +376,16 @@ func (s *MemStore) CaptureHold(_ context.Context, req ledger.CaptureRequest) (le
 	if !ok {
 		return ledger.Transfer{}, ledger.ErrHoldNotFound
 	}
+	for _, id := range []string{h.FromAccountID, h.ToAccountID} {
+		if err := ledger.ValidatePublicAccountID(id); err != nil {
+			return ledger.Transfer{}, err
+		}
+	}
 	if h.Status != ledger.HoldActive {
 		return ledger.Transfer{}, ledger.ErrHoldNotActive
 	}
 	now := s.now()
-	if !h.ExpiresAt.IsZero() && now.After(h.ExpiresAt) {
+	if !h.ExpiresAt.IsZero() && !now.Before(h.ExpiresAt) {
 		h.Status = ledger.HoldExpired
 		fromAcct := s.accounts[h.FromAccountID]
 		fromAcct.Held -= h.Amount
@@ -468,7 +473,7 @@ func (s *MemStore) ExpireHolds(_ context.Context, now time.Time) (int, error) {
 
 	count := 0
 	for id, h := range s.holds {
-		if h.Status == ledger.HoldActive && !h.ExpiresAt.IsZero() && now.After(h.ExpiresAt) {
+		if h.Status == ledger.HoldActive && !h.ExpiresAt.IsZero() && !now.Before(h.ExpiresAt) {
 			h.Status = ledger.HoldExpired
 			fromAcct := s.accounts[h.FromAccountID]
 			fromAcct.Held -= h.Amount
@@ -502,6 +507,11 @@ func (s *MemStore) RefundTransfer(_ context.Context, req ledger.RefundRequest) (
 	orig, ok := s.transfers[req.TransferID]
 	if !ok {
 		return ledger.Refund{}, ledger.Transfer{}, ledger.ErrTransferNotFound
+	}
+	for _, id := range []string{orig.FromAccountID, orig.ToAccountID} {
+		if err := ledger.ValidatePublicAccountID(id); err != nil {
+			return ledger.Refund{}, ledger.Transfer{}, err
+		}
 	}
 	if orig.Status == ledger.StatusRefunded || s.refundSums[orig.ID] >= orig.Amount {
 		return ledger.Refund{}, ledger.Transfer{}, ledger.ErrRefundExceedsTransfer

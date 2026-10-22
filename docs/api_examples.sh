@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8090}"
-TOKEN="slice-secret-token-2026"
+TOKEN="${API_AUTH_TOKEN:?Set API_AUTH_TOKEN to the private token configured on the server}"
 AUTH_HEADER="Authorization: Bearer ${TOKEN}"
 
 echo "=== 1. Health Check ==="

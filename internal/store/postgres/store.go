@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"time"
 
@@ -60,8 +59,8 @@ func isCheckViolation(err error) bool {
 }
 
 func (s *Store) CreateAccount(ctx context.Context, a ledger.Account) error {
-	if a.ID == "" {
-		return fmt.Errorf("account id required")
+	if err := ledger.ValidateNewAccount(a); err != nil {
+		return err
 	}
 	if a.Currency == "" {
 		a.Currency = money.CurrencyINR
@@ -415,6 +414,11 @@ func (s *Store) ApplyPosting(ctx context.Context, req ledger.PostRequest) (ledge
 }
 
 func (s *Store) AuthorizeHold(ctx context.Context, req ledger.AuthorizeRequest) (ledger.Hold, error) {
+	for _, id := range []string{req.FromAccountID, req.ToAccountID} {
+		if err := ledger.ValidatePublicAccountID(id); err != nil {
+			return ledger.Hold{}, err
+		}
+	}
 	if req.IdempotencyKey == "" {
 		return ledger.Hold{}, ledger.ErrMissingIdempotencyKey
 	}
@@ -535,6 +539,7 @@ func (s *Store) CaptureHold(ctx context.Context, req ledger.CaptureRequest) (led
 	}
 
 	var result ledger.Transfer
+	expired := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		// Lock hold row
 		var h ledger.Hold
@@ -558,6 +563,11 @@ func (s *Store) CaptureHold(ctx context.Context, req ledger.CaptureRequest) (led
 		}
 
 		// Read after the hold lock: a concurrent capture may just have committed.
+		for _, id := range []string{h.FromAccountID, h.ToAccountID} {
+			if err := ledger.ValidatePublicAccountID(id); err != nil {
+				return err
+			}
+		}
 		existing, ok, err := s.readTransferByKeyTx(ctx, tx, req.IdempotencyKey)
 		if err != nil {
 			return err
@@ -575,11 +585,16 @@ func (s *Store) CaptureHold(ctx context.Context, req ledger.CaptureRequest) (led
 		}
 
 		now := time.Now().UTC()
-		if !h.ExpiresAt.IsZero() && now.After(h.ExpiresAt) {
-			_, _ = tx.Exec(ctx, `UPDATE holds SET status = 'expired' WHERE id = $1`, h.ID)
-			_, _ = tx.Exec(ctx, `UPDATE accounts SET held = held - $1, updated_at = $2 WHERE id = $3`,
-				int64(h.Amount), now, h.FromAccountID)
-			return ledger.ErrHoldExpired
+		if !h.ExpiresAt.IsZero() && !now.Before(h.ExpiresAt) {
+			if _, err := tx.Exec(ctx, `UPDATE holds SET status = 'expired' WHERE id = $1`, h.ID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE accounts SET held = held - $1, updated_at = $2 WHERE id = $3`,
+				int64(h.Amount), now, h.FromAccountID); err != nil {
+				return err
+			}
+			expired = true
+			return nil // Commit the release before returning the expiry outcome.
 		}
 
 		if req.Amount > h.Amount {
@@ -684,7 +699,13 @@ func (s *Store) CaptureHold(ctx context.Context, req ledger.CaptureRequest) (led
 		return nil
 	})
 
-	return result, err
+	if err != nil {
+		return ledger.Transfer{}, err
+	}
+	if expired {
+		return ledger.Transfer{}, ledger.ErrHoldExpired
+	}
+	return result, nil
 }
 
 func (s *Store) VoidHold(ctx context.Context, req ledger.VoidRequest) (ledger.Hold, error) {
@@ -754,23 +775,22 @@ func (s *Store) VoidHold(ctx context.Context, req ledger.VoidRequest) (ledger.Ho
 }
 
 func (s *Store) ExpireHolds(ctx context.Context, now time.Time) (int, error) {
-	tag, err := s.pool.Exec(ctx, `
+	var count int
+	err := s.pool.QueryRow(ctx, `
 		WITH expired AS (
-			UPDATE holds
-			SET status = 'expired'
+			UPDATE holds SET status = 'expired'
 			WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= $1
 			RETURNING from_account_id, amount
+		), released AS (
+			SELECT from_account_id, SUM(amount) AS amount
+			FROM expired GROUP BY from_account_id
+		), updated AS (
+			UPDATE accounts SET held = accounts.held - released.amount, updated_at = $1
+			FROM released WHERE accounts.id = released.from_account_id
+			RETURNING accounts.id
 		)
-		UPDATE accounts
-		SET held = accounts.held - expired.amount, updated_at = $1
-		FROM expired
-		WHERE accounts.id = expired.from_account_id`,
-		now,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return int(tag.RowsAffected()), nil
+		SELECT COUNT(*) FROM expired`, now).Scan(&count)
+	return count, err
 }
 
 func (s *Store) RefundTransfer(ctx context.Context, req ledger.RefundRequest) (ledger.Refund, ledger.Transfer, error) {
@@ -807,6 +827,12 @@ func (s *Store) RefundTransfer(ctx context.Context, req ledger.RefundRequest) (l
 		}
 		if !ok {
 			return ledger.ErrTransferNotFound
+		}
+
+		for _, id := range []string{orig.FromAccountID, orig.ToAccountID} {
+			if err := ledger.ValidatePublicAccountID(id); err != nil {
+				return err
+			}
 		}
 
 		var totalAlreadyRefunded int64

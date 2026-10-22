@@ -69,7 +69,7 @@ func (s *Server) HandleCreateAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "account already exists with different attributes")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		handleLedgerError(w, err)
 		return
 	}
 
@@ -157,6 +157,13 @@ func (s *Server) HandleTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Currency == "" {
 		req.Currency = money.CurrencyINR
+	}
+
+	for _, id := range []string{req.FromAccountID, req.ToAccountID} {
+		if err := ledger.ValidatePublicAccountID(id); err != nil {
+			handleLedgerError(w, err)
+			return
+		}
 	}
 
 	// A committed operation is already risk-checked. Replaying it must not
@@ -257,6 +264,13 @@ func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Currency == "" {
 		req.Currency = money.CurrencyINR
+	}
+
+	for _, id := range []string{req.FromAccountID, req.ToAccountID} {
+		if err := ledger.ValidatePublicAccountID(id); err != nil {
+			handleLedgerError(w, err)
+			return
+		}
 	}
 
 	existing, found, err := s.store.GetHoldByKey(r.Context(), idemKey)
@@ -491,7 +505,9 @@ func handleLedgerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusPaymentRequired, err.Error())
 	case errors.Is(err, ledger.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ledger.ErrInvalidAmount),
+	case errors.Is(err, ledger.ErrInvalidInitialBalance),
+		errors.Is(err, ledger.ErrReservedAccount),
+		errors.Is(err, ledger.ErrInvalidAmount),
 		errors.Is(err, ledger.ErrSameAccount),
 		errors.Is(err, ledger.ErrMissingIdempotencyKey),
 		errors.Is(err, ledger.ErrCurrencyMismatch),

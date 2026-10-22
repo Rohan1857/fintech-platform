@@ -40,7 +40,11 @@ func main() {
 	defer cancel()
 
 	httpPort := getEnv("HTTP_PORT", "8090")
-	authToken := getEnv("API_AUTH_TOKEN", "slice-secret-token-2026")
+	authToken, err := loadAuthToken()
+	if err != nil {
+		logger.Error("invalid API authentication configuration", "error", err)
+		os.Exit(1)
+	}
 	dbURL := getEnv("DATABASE_URL", "")
 	redisURL := getEnv("REDIS_URL", "")
 	kafkaBrokersStr := getEnv("KAFKA_BROKERS", "")
@@ -54,7 +58,7 @@ func main() {
 
 	// 1. Initialize PostgreSQL Storage
 	if dbURL != "" {
-		logger.Info("connecting to postgresql", "url", dbURL)
+		logger.Info("connecting to postgresql")
 		poolCtx, poolCancel := context.WithTimeout(ctx, 5*time.Second)
 		var err error
 		pool, err = pgxpool.New(poolCtx, dbURL)
@@ -137,6 +141,11 @@ func main() {
 	fraudEngine := fraud.NewEngine(fraudCfg, tracker, auditor)
 
 	// 5. Start Background Workers: Outbox Relay & Event Consumer
+	expiryDone := make(chan struct{})
+	go func() {
+		defer close(expiryDone)
+		runHoldExpiry(ctx, s, 30*time.Second, logger)
+	}()
 	if pool != nil {
 		relay := outbox.NewRelay(pool, publisher, outbox.DefaultConfig())
 		go func() {
@@ -205,6 +214,7 @@ func main() {
 	defer shutdownCancel()
 
 	_ = httpServer.Shutdown(shutdownCtx)
+	<-expiryDone
 	if pool != nil {
 		pool.Close()
 	}

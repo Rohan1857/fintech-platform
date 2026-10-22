@@ -19,7 +19,6 @@ type RouterConfig struct {
 
 func DefaultRouterConfig() RouterConfig {
 	return RouterConfig{
-		AuthToken:      "slice-secret-token-2026",
 		RateLimitRate:  100,
 		RateLimitBurst: 200,
 		RequestTimeout: 10 * time.Second,

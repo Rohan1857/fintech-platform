@@ -19,6 +19,8 @@ Wallet transfers, authorization holds, partial capture, refunds, synchronous ris
 | Risk returns REVIEW | Return an assessment with HTTP 202; create no transfer or hold | [API safety tests](internal/api/payment_safety_test.go) |
 | Risk storage becomes unavailable or read-only | Apply the configured fail-closed outcome before funds move | [Write-failure regression](internal/fraud/write_failure_test.go) |
 | A refund exceeds the remaining refundable amount | Reject it and preserve balances | [Payment lifecycle tests](internal/store/postgres/store_integration_test.go) |
+| Several authorizations expire on one wallet | Release their combined amount once and preserve live holds | [Shared expiry tests](internal/store/safety_contract_test.go) |
+| A client supplies a negative balance or internal account ID | Reject the request without creating an account or moving reserve funds | [API input tests](internal/api/account_safety_test.go), [database constraints](internal/store/postgres/account_constraints_test.go) |
 
 ## Review in five minutes
 
@@ -44,21 +46,23 @@ A matching **committed** transfer or hold is returned before a fresh risk assess
 
 ## Run the demo
 
-Requires Go **1.26+**. The fastest path uses explicit in-memory development mode:
+Requires Go **1.26+** and an explicitly configured private `API_AUTH_TOKEN`. Set the same token in the server and demo terminals. The former published demo token is rejected, including in development mode. The fastest path uses explicit in-memory development mode:
 
 ```bash
+export API_AUTH_TOKEN="$(openssl rand -hex 32)"
 ALLOW_IN_MEMORY_DEV_MODE=true HTTP_PORT=8090 go run ./cmd/server
 ```
 
 PowerShell:
 
 ```powershell
+$env:API_AUTH_TOKEN = [guid]::NewGuid().ToString("N")
 $env:ALLOW_IN_MEMORY_DEV_MODE = "true"
 $env:HTTP_PORT = "8090"
 go run ./cmd/server
 ```
 
-In another terminal, from the repository root:
+In another terminal, from the repository root, export the **same private token** as `API_AUTH_TOKEN` before running the demo:
 
 ```bash
 go run ./cmd/demo
@@ -90,22 +94,23 @@ Use a **disposable** PostgreSQL database and Redis instance. Integration fixture
 For the repository’s existing Compose service definitions:
 
 ```bash
+export API_AUTH_TOKEN="$(openssl rand -hex 32)"
 docker compose up -d postgres redis
 export DATABASE_URL='postgres://ledger:ledger_password@127.0.0.1:5432/ledger?sslmode=disable'
 export REDIS_ADDR='127.0.0.1:6379'
-# Compose applies the migration only when its PostgreSQL volume is first initialized.
+# Compose applies both migrations only when its PostgreSQL volume is first initialized.
 go test -race -p 1 -count=1 -timeout 5m ./...
 go vet ./...
 go build ./cmd/server ./cmd/demo ./cmd/loadtest
 ```
 
-For an independently provisioned empty database, apply `migrations/000001_init_schema.up.sql` with `psql -v ON_ERROR_STOP=1` first. The equivalent PowerShell environment syntax is `$env:DATABASE_URL = "..."` and `$env:REDIS_ADDR = "127.0.0.1:6379"`.
+For an independently provisioned empty database, apply `migrations/*.up.sql` in filename order with `psql -v ON_ERROR_STOP=1` first. Existing databases need `000002_restrict_system_accounts.up.sql`; restarting Compose does not migrate existing volumes. The upgrade changes constraints without deleting or repairing account data. Invalid legacy system-account rows cause a transaction rollback and require operator review before retrying. The equivalent PowerShell environment syntax is `$env:DATABASE_URL = "..."` and `$env:REDIS_ADDR = "127.0.0.1:6379"`.
 
 The full Compose stack also defines Kafka and observability services. It was **not exercised** in the latest local verification; see [operational limits](AUDIT_REPORT.md#not-established-by-this-verification). The published CI workflow provisions fresh PostgreSQL/Redis services and uses the same serial race-test command.
 
 ## Performance: successful payments, with context
 
-One local WSL2 Linux amd64 run, Go 1.26.0, 20 reported logical CPUs, PostgreSQL 16, Redis 7, pool limit 50. These are short local measurements, not a sustained capacity claim. Setup is excluded; completed/s counts successful operations only, and latency percentiles cover successful operations only.
+One local run on 22 October 2026: WSL2 Linux amd64, Go 1.26.0, 20 reported logical CPUs, PostgreSQL 16, Redis 7, pool limit 50. These are short local measurements, not a sustained capacity claim. Setup is excluded; completed/s counts successful operations only, and latency percentiles cover successful operations only. A separate run after the account/expiry fixes is recorded in [the verification report](AUDIT_REPORT.md#account-and-expiry-follow-up-23-october-2026).
 
 | Scenario | Requests / workers | Completed / failed | Completed/s | p50 | p95 | p99 |
 |---|---:|---:|---:|---:|---:|---:|
@@ -124,11 +129,15 @@ The harness creates uniquely named accounts without truncating the database, pri
 
 ## API essentials
 
+Client-created account IDs cannot start with `system_`, and initial balances must be non-negative. System reserve accounts are used only for internal opening entries; public transfers, authorizations, captures, and refunds cannot move reserve funds.
+
+The service sweeps expired holds on startup and every 30 seconds. An attempted capture of an expired hold also releases its reservation atomically before returning the expiry outcome.
+
 Amounts are integer minor units: **100 paise = INR 1**. Financial mutations require the `Idempotency-Key` header; putting the key only in JSON does not satisfy the contract. Examples assume the two demo accounts have been created.
 
 ```bash
 curl -sS http://localhost:8090/api/v1/transfers \
-  -H 'Authorization: Bearer slice-secret-token-2026' \
+  -H "Authorization: Bearer ${API_AUTH_TOKEN}" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: checkout-001' \
   -d '{"from_account_id":"buyer","to_account_id":"seller","amount":15000,"currency":"INR"}'
