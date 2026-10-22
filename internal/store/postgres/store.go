@@ -10,12 +10,12 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Rohan1857/fintech-platform/internal/ledger"
+	"github.com/Rohan1857/fintech-platform/internal/store"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/messi/fintech-platform/internal/ledger"
-	"github.com/messi/fintech-platform/internal/store"
-	"github.com/messi/fintech-platform/pkg/money"
 )
 
 func newID() string {

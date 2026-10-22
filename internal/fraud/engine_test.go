@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/messi/fintech-platform/pkg/money"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 )
 
 func TestFraudEngine_LowRiskApproved(t *testing.T) {

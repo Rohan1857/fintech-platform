@@ -3,7 +3,7 @@ package ledger
 import (
 	"fmt"
 
-	"github.com/messi/fintech-platform/pkg/money"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 )
 
 // AssertBalanced verifies the fundamental double-entry invariant:

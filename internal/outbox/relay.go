@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/Rohan1857/fintech-platform/internal/events"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/messi/fintech-platform/internal/events"
 )
 
 // Config configures outbox relay polling and retry policies.

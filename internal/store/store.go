@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/messi/fintech-platform/internal/ledger"
-	"github.com/messi/fintech-platform/pkg/money"
+	"github.com/Rohan1857/fintech-platform/internal/ledger"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 )
 
 // ReconciliationReport summarizes double-entry consistency audit results.

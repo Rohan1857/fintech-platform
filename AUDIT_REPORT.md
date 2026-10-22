@@ -1,7 +1,7 @@
 # Independent Production-Readiness Audit Report: Fintech Payment & Fraud Platform
 
 **Date of Audit**: October 20, 2026  
-**Auditor**: Independent Coding & Systems Verification Agent  
+**Scope**: Production Readiness, Concurrency & Performance Verification  
 **Target Environment**: `C:\Users\messi\fintech-platform` (WSL2 Ubuntu-24.04, 20 CPUs, 16GB RAM)  
 **Infrastructure Under Test**: Real PostgreSQL 16 (`pgx/v5`), Real Redis 7 (`go-redis/v9`), Go 1.24/1.26 toolchain (`go test -race`).
 
@@ -11,7 +11,7 @@
 
 - **Final Recommendation**: **GO (APPROVED FOR PORTFOLIO PUBLICATION)**
 - **Prerequisite Met**: All financial correctness, concurrency, deadlock-prevention, idempotency, fraud evaluation fail-closed, and outbox delivery invariants have been independently verified against live PostgreSQL 16 and Redis 7 instances with Go's race detector (`-race`).
-- **Benchmark Honesty Restored**: Prior misleading claims citing 208k+ RPS as "PostgreSQL payment throughput" were identified as in-memory microbenchmarks and explicitly disaggregated in all documentation and resume bullets. Measured production throughput over real PostgreSQL 16 is **2,801 ACID transfers/sec** (independent accounts) and **8,151 RPS** over the full HTTP REST API stack.
+- **Benchmark Honesty Restored**: Prior misleading claims citing 208k+ RPS as "PostgreSQL payment throughput" were identified as in-memory microbenchmarks and explicitly disaggregated in all documentation. Measured production throughput over real PostgreSQL 16 is **2,801 ACID transfers/sec** (independent accounts) and **8,151 RPS** over the full HTTP REST API stack.
 
 ---
 
@@ -150,9 +150,9 @@ Reconciliation Clean: TRUE
 
 ---
 
-## 8. Corrected Candidate Resume Bullets (Slice Backend Role)
+## 8. Architectural Highlights
 
-1. **Fintech Payment Processing Core**: Architected a double-entry payment ledger and REST API in Go capable of 8,100+ end-to-end payment RPS (and 260k+ in-memory RPS) with sub-3ms p95 latency; implemented deterministic lexicographical row locking (`FOR UPDATE`) in PostgreSQL 16 sustaining 2,800+ ACID transfers/sec, eliminating concurrency deadlocks and ensuring zero floating-point rounding errors via integer minor units.
+1. **Double-Entry Ledger Core**: Engineered a concurrent double-entry payment ledger in Go handling 8,100+ end-to-end payment RPS (and 260k+ in-memory RPS) with sub-3ms p95 latency; implemented deterministic lexicographical row locking (`FOR UPDATE`) in PostgreSQL 16 sustaining 2,800+ ACID transfers/sec, eliminating concurrency deadlocks and ensuring zero floating-point rounding errors via integer minor units.
 2. **Real-Time Fraud & Risk Mitigation**: Engineered a synchronous pre-flight fraud engine evaluating velocity and high-value rules in sub-millisecond Redis 7 sliding windows (`ZSET`); enforced a strict fail-closed security architecture that halts suspicious transactions without silent approvals during dependency outages.
 3. **Event-Driven Resilience & Zero Dual-Writes**: Implemented the transactional outbox pattern to stream payment events to Apache Kafka without dual-write inconsistencies; built an idempotent consumer with Dead-Letter Queue (DLQ) routing, ensuring exactly-once business semantics under network partitions and replays.
 
@@ -160,4 +160,4 @@ Reconciliation Clean: TRUE
 
 ## 9. Final Conclusion
 
-The system satisfies all functional, concurrency, security, and financial correctness requirements under real infrastructure stress testing. With honest performance disclosures established in documentation and resume bullets, the repository stands as a senior-grade fintech engineering portfolio project ready for technical evaluation.
+The platform satisfies all functional, concurrency, security, and financial correctness requirements under real infrastructure stress testing. With honest performance disclosures established in documentation, the system demonstrates verified double-entry correctness, deadlock prevention, and fail-closed fraud mitigation under real PostgreSQL and Redis workloads.

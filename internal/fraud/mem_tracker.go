@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/messi/fintech-platform/pkg/money"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 )
 
 type txRecord struct {

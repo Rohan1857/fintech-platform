@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/messi/fintech-platform/internal/fraud"
-	"github.com/messi/fintech-platform/internal/ledger"
-	"github.com/messi/fintech-platform/internal/store/memstore"
+	"github.com/Rohan1857/fintech-platform/internal/fraud"
+	"github.com/Rohan1857/fintech-platform/internal/ledger"
+	"github.com/Rohan1857/fintech-platform/internal/store/memstore"
 )
 
 func setupTestApp() http.Handler {

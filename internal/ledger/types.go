@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/messi/fintech-platform/pkg/money"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 )
 
 // TransferStatus represents state of a ledger transfer.

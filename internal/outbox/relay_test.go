@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rohan1857/fintech-platform/internal/events"
+	"github.com/Rohan1857/fintech-platform/internal/ledger"
+	"github.com/Rohan1857/fintech-platform/internal/outbox"
+	"github.com/Rohan1857/fintech-platform/internal/store/postgres"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/messi/fintech-platform/internal/events"
-	"github.com/messi/fintech-platform/internal/ledger"
-	"github.com/messi/fintech-platform/internal/outbox"
-	"github.com/messi/fintech-platform/internal/store/postgres"
-	"github.com/messi/fintech-platform/pkg/money"
 )
 
 func getTestPool(t *testing.T) *pgxpool.Pool {

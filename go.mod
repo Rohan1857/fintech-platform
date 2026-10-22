@@ -1,4 +1,4 @@
-module github.com/messi/fintech-platform
+module github.com/Rohan1857/fintech-platform
 
 go 1.26
 

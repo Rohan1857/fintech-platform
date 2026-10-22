@@ -1,234 +1,299 @@
-# Production Fintech Payment Processing & Real-Time Fraud Platform
+# fintech-platform
 
-[![Go Version](https://img.shields.io/badge/Go-1.24%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI / Verification](https://img.shields.io/badge/CI-Passing-success)](.github/workflows/ci.yml)
+A high-throughput, double-entry payment ledger and synchronous fraud detection engine written in Go.
 
-A high-performance, production-oriented **Payment Processing and Real-Time Fraud Detection Platform** written in Golang, designed for fintech consumer credit and payment infrastructure (tailored to fintech backend engineering at Slice).
-
-The platform solves core financial engineering challenges:
-1. **Mathematical double-entry correctness**: Money is stored exclusively in integer minor units (e.g., Paise for INR). Every transfer posts balanced entries (`∑ amounts == 0`).
-2. **Deterministic concurrency**: Zero deadlocks under concurrent transfers via lexicographically ordered PostgreSQL row locks (`SELECT ... FOR UPDATE`).
-3. **Aggregated multi-leg posting validation**: Fixes per-leg balance validation vulnerabilities by aggregating net account impacts before enforcing available balance constraints.
-4. **Synchronous pre-flight fraud engine**: Evaluates transaction risk synchronously *before* money moves using configurable DSL rules, sliding-window velocity tracking in Redis, and a strict **fail-closed** security policy.
-5. **Zero dual-write event streaming**: Atomic transactional outbox pattern guarantees Kafka event delivery without distributed split-brain inconsistencies, paired with an idempotent consumer and Dead-Letter Queue (DLQ).
+The project handles the core invariants required by modern payment infrastructure: strictly balanced double-entry mutations, deterministic row locking to prevent deadlocks under high concurrency, sub-millisecond fraud velocity checks in Redis, and a transactional outbox pattern to eliminate distributed dual-write inconsistencies.
 
 ---
 
-## Architecture Diagram
+## Architecture Overview
 
 ```
-                                      [ Client / Checkout / Mobile API ]
-                                                      │
-                                                      ▼
-                                     ┌─────────────────────────────────┐
-                                     │      REST API & Security        │
-                                     │   (Auth, Rate-Limit, Validations)│
-                                     └────────────────┬────────────────┘
-                                                      │
-                                                      ▼
-                                     ┌─────────────────────────────────┐
-                                     │  Synchronous Fraud Engine       │
-                                     │   - Rule DSL (High-Value Check) │
-                                     │   - Redis Sliding-Window (ZSET) │
-                                     │   - Fail-Closed Safety Policy   │
-                                     └────────────────┬────────────────┘
-                                                      │ [If APPROVE]
-                                                      ▼
-                                     ┌─────────────────────────────────┐
-                                     │   Double-Entry Ledger Core      │
-                                     │   - Deterministic Row Locks     │
-                                     │   - Aggregated Leg Validation   │
-                                     │   - Idempotent Request Cache    │
-                                     └────────────────┬────────────────┘
-                                                      │ (Single ACID Tx)
-                                                      ▼
-                                     ┌─────────────────────────────────┐
-                                     │      PostgreSQL 16 Storage      │
-                                     │   - accounts, transfers, entries│
-                                     │   - holds, refunds, outbox      │
-                                     └────────────────┬────────────────┘
-                                                      │
-                                Async Outbox Relay    │ (Reliable polling)
-                                                      ▼
-                                     ┌─────────────────────────────────┐
-                                     │          Apache Kafka           │
-                                     │   Topics: payment.events, DLQ   │
-                                     └────────────────┬────────────────┘
-                                                      │
-                                                      ▼
-                                     ┌─────────────────────────────────┐
-                                     │       Idempotent Consumer       │
-                                     │   - Analytics, Auditing, DLQ    │
-                                     └─────────────────────────────────┘
+                            [ Client / Mobile / API Consumer ]
+                                            │
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │   REST API Gateway & Security   │
+                           │ (Bearer Auth, Token Bucket Rate)│
+                           └────────────────┬────────────────┘
+                                            │
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │ Synchronous Fraud Risk Engine   │
+                           │  - High/Critical value checks   │
+                           │  - Redis sliding window (ZSET)  │
+                           │  - Fail-closed security policy  │
+                           └────────────────┬────────────────┘
+                                            │ [If APPROVE]
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │    Double-Entry Ledger Core     │
+                           │  - Integer minor math (Paise)   │
+                           │  - Sorted row locks (Deadlocks) │
+                           │  - Aggregated leg validation    │
+                           │  - Idempotency key evaluation   │
+                           └────────────────┬────────────────┘
+                                            │ (Single ACID Tx)
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │      PostgreSQL 16 Storage      │
+                           │   accounts, transfers, entries  │
+                           │   holds, refunds, outbox_events │
+                           └────────────────┬────────────────┘
+                                            │
+                      Async Outbox Relay    │ (Reliable batch polling)
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │          Apache Kafka           │
+                           │   Topics: payment.events, DLQ   │
+                           └────────────────┬────────────────┘
+                                            │
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │       Idempotent Consumer       │
+                           │  - Deduplication via DB table   │
+                           │  - Downstream analytics & DLQ   │
+                           └─────────────────────────────────┘
 ```
 
 ---
 
-## Technology Stack & Engineering Decisions
+## Core Financial & Engineering Guarantees
 
-| Component | Technology | Technical Rationale |
-|---|---|---|
-| **Language** | Go (1.24+) | Low-latency garbage collection, lightweight goroutines for concurrent processing, static type safety. |
-| **HTTP Framework** | Go Standard Library (`net/http`) | Clean, idiomatic routing via Go 1.22+ pattern matching (`http.ServeMux`), zero unnecessary external framework dependencies. |
-| **Database** | PostgreSQL 16 (`pgx/v5`) | ACID transactions, native `BIGINT` support for integer minor units, deterministic `SELECT ... FOR UPDATE` row locking. |
-| **Velocity Cache** | Redis 7 (`go-redis/v9`) | Sub-millisecond sliding-window velocity tracking using sorted sets (`ZSET`) scored by millisecond timestamps. |
-| **Message Broker** | Apache Kafka 3.7 (KRaft) | High-throughput distributed log, partitioned by Account ID for strict FIFO event ordering per wallet. |
-| **Observability** | Prometheus & Grafana | Custom metrics covering payment RPS, p50/p95/p99 latency histograms, fraud rejection rate, outbox backlog, and Kafka consumer lag. |
-| **Deployment** | Docker Compose | Multi-container reproducible environment with automated health checks, schema migrations, and pre-configured dashboards. |
+### 1. Integer Minor Units & Balanced Postings
+Floating-point math is banned. Money is tracked strictly in integer minor units (`type Money int64`, e.g. 1 INR = 100 Paise). Every transfer consists of two or more entries that must sum to exactly zero:
 
----
+$$\sum_{i=1}^{n} \text{entry}_i = 0$$
 
-## Main Features & Implementation
+An account has a settled `Balance` and reserved `Held` amount. Available funds are computed as `Balance - Held` and are guarded at the database level by PostgreSQL constraints (`CHECK (balance >= held)` and `CHECK (balance >= 0)`).
 
-### 1. Financial Correctness & Double-Entry Accounting
-- **Integer Minor Units**: Money is represented as `type Money int64` (e.g. 100 paise = 1 INR). Floating-point arithmetic is forbidden.
-- **Double-Entry Invariant**: Every financial operation posts at least two legs that sum to zero. Commits are refused if `AssertBalanced` fails.
-- **Available Balance Isolation**: Accounts maintain `Balance` (settled money) and `Held` (reserved funds). Available funds (`Balance - Held`) can never drop below zero.
-- **Aggregated Leg Validation (Upstream Bug Fix)**: In multi-leg postings, multiple legs for the same account are aggregated net (`AggregatePostings`) before validating limits, preventing overdraft vulnerabilities where individual legs pass independently.
-- **Deterministic Row Locking**: Account IDs are sorted lexicographically before acquiring `FOR UPDATE` locks, completely preventing deadlocks during concurrent bilateral transfers.
+### 2. Deterministic Row Locking (Deadlock Prevention)
+When transferring between accounts, circular deadlocks (e.g. Account A $\to$ Account B concurrent with Account B $\to$ Account A) are eliminated by sorting unique account IDs lexicographically before acquiring `SELECT ... FOR UPDATE` row locks inside the database transaction.
 
-### 2. Full Payment Lifecycle
-- **Direct Transfers**: Immediate balanced debit and credit.
-- **Authorization Holds**: Two-step payment reservation (`AuthorizeHold`) fencing off available balance without moving settled funds.
-- **Hold Settlement**: Full or partial capture (`CaptureHold`), transferring captured funds and automatically releasing uncaptured hold amounts.
-- **Hold Expiry & Voiding**: Automated expiry (`ExpireHolds`) or merchant cancellation (`VoidHold`) restoring available balance.
-- **Refunds & Reversals**: Full and partial refunds (`RefundTransfer`), validating available funds on the beneficiary, creating reverse balanced entries, and tracking parent transfer lineage.
+### 3. Aggregated Multi-Leg Validation (Upstream Bug Fix)
+In multi-leg split transfers, naive ledger implementations validate balances per leg sequentially. If an account has multiple debit legs, sequential validation can permit an overdraft before earlier legs are deducted. This engine aggregates net impact by account upfront via `AggregatePostings`:
 
-### 3. Real-Time Fraud Detection Engine
-- **Pre-Flight Synchronous Evaluation**: Evaluates risk *before* money moves.
-- **Rules Evaluated**:
-  1. *High-Value & Critical-Value Detection*: Flags transactions exceeding configurable thresholds (e.g. > 50,000 INR).
-  2. *Redis Sliding-Window Velocity*: Checks transaction volume and cumulative amounts within 1-minute and 5-minute sliding windows.
-  3. *Rapid Repeated Beneficiary Detection*: Identifies burst payments directed to the same recipient.
-  4. *Frequency Burst Anomaly*: Compares short-window transaction frequency against medium-window baseline.
-- **Configurable Risk Decisions**: `APPROVE`, `REVIEW`, `REJECT` based on cumulative risk score and hard rule outcomes.
-- **Fail-Closed Security Policy**: If Redis or the risk engine is unavailable and `FailClosed: true`, transactions are rejected or routed to review. Transactions are **never silently approved**.
-- **Audit Persistence**: Every risk evaluation decision is permanently audited in `fraud_evaluations`.
+$$\Delta_{\text{net}}(a) = \sum_{e \in \text{legs}(a)} e.\text{Amount}$$
 
-### 4. Event-Driven Outbox & Kafka
-- **Transactional Outbox**: Outbox records are inserted in the *exact same PostgreSQL transaction* as ledger entries, eliminating dual-write failure windows.
-- **Reliable Relay**: Background worker polls `outbox_events` and publishes to Kafka with exponential backoff.
-- **Idempotent Consumer**: Consumer checks `processed_events` table before executing side-effects, guaranteeing exactly-once semantics.
-- **Dead-Letter Queue (DLQ)**: Poison-pill messages exceeding maximum retry thresholds are routed to `payment.dlq`.
+Available balance checks and state mutations are performed on the aggregated delta.
+
+### 4. Synchronous Pre-Flight Fraud Evaluation & Fail-Closed Policy
+Fraud checks run synchronously **before** money moves. The engine checks:
+- **High/Critical Thresholds**: Evaluates transaction size against configurable limits (e.g. flag for review at ₹50,000, reject at ₹250,000).
+- **Redis Sliding-Window Velocity**: Tracks transaction count and volume using Redis sorted sets (`ZSET`) scored by millisecond epoch timestamps.
+- **Beneficiary Frequency**: Detects rapid repeated transfers to the same recipient.
+- **Fail-Closed Safety**: If Redis or the risk engine is unreachable, the system activates its fail-closed policy (`FailClosed: true`), rejecting or reviewing the transaction rather than silently moving money without security checks.
+
+### 5. Transactional Outbox (Zero Dual-Writes)
+Domain events (`payment.created`, `payment.completed`, `payment.failed`, `payment.refunded`, `fraud.flagged`) are written to the `outbox_events` table inside the **exact same PostgreSQL transaction** as the financial ledger entries. An asynchronous relay worker polls unpublished outbox entries and publishes them to Apache Kafka with exponential backoff and Dead-Letter Queue (DLQ) routing for poisoned payloads.
+
+Downstream consumers check the `processed_events` table to ensure idempotent processing across replays and network retries.
 
 ---
 
-## Verified Benchmark Results
+## Measured Performance Benchmarks
 
-Rigorous multi-tier benchmarks executed using `cmd/loadtest/main.go` on linux/amd64 (20 CPUs). Tested against real PostgreSQL 16 and Redis 7 instances:
+Benchmarks were recorded using the included harness (`cmd/loadtest/main.go`) on Linux amd64 (20 CPUs). Rather than conflating in-memory microbenchmarks with database numbers, results are disaggregated by execution tier:
 
-| Tier | Scenario | Infrastructure | Requests | Concurrency | Measured Throughput | p50 Latency | p95 Latency | p99 Latency |
-|---|---|---|---|---|---|---|---|---|
-| **Tier 1: In-Memory** | Ordinary Independent Transfers | In-Memory (`sync.Mutex`) | 2,000 | 20 workers | **262,430 RPS** | 1.9 µs | 0.66 ms | 1.66 ms |
-| **Tier 1: In-Memory** | Contended Hot-Account Transfers | In-Memory (`sync.Mutex`) | 2,000 | 20 workers | **298,845 RPS** | 1.9 µs | 0.74 ms | 1.26 ms |
-| **Tier 2: Real PostgreSQL** | Independent Account Transfers | PostgreSQL 16 (`pgxpool` 50) | 1,000 | 20 workers | **2,801 RPS** | 4.93 ms | 18.86 ms | 30.12 ms |
-| **Tier 2: Real PostgreSQL** | Contended Hot-Account Transfers | PostgreSQL 16 (`pgxpool` 50) | 500 | 10 workers | **728 RPS** | 10.41 ms | 32.34 ms | 62.74 ms |
-| **Tier 3: HTTP API** | `POST /api/v1/transfers` (End-to-End) | HTTP/1.1 + Redis + PG 16 | 500 | 20 workers | **8,151 RPS** | 0.76 ms | 2.95 ms | 40.29 ms |
-| **Tier 4: Outbox Relay** | `ProcessBatch` Polling & Dispatch | PostgreSQL `outbox_events` | 20 | 1 worker | **28.4 batches/s** | 44.30 ms | 60.55 ms | 60.55 ms |
+| Tier | Scenario | Infrastructure | Requests | Concurrency | Throughput | p50 Latency | p95 Latency | p99 Latency |
+|---|---|---|---|---|---|---|---|
+| **In-Memory** | Independent Transfers | RAM (`sync.Mutex`) | 2,000 | 20 workers | **262,430 RPS** | 1.9 µs | 0.66 ms | 1.66 ms |
+| **In-Memory** | Contended Hot-Account | RAM (`sync.Mutex`) | 2,000 | 20 workers | **298,845 RPS** | 1.9 µs | 0.74 ms | 1.26 ms |
+| **PostgreSQL 16** | Independent Transfers | `pgxpool` (50 conns) | 1,000 | 20 workers | **2,801 RPS** | **4.93 ms** | **18.86 ms** | **30.12 ms** |
+| **PostgreSQL 16** | Contended Hot-Account | `pgxpool` (50 conns) | 500 | 10 workers | **728 RPS** | **10.41 ms** | **32.34 ms** | **62.74 ms** |
+| **HTTP REST API** | `POST /api/v1/transfers` | HTTP + Redis + PG | 500 | 20 workers | **8,151 RPS** | **0.76 ms** | **2.95 ms** | **40.29 ms** |
+| **Outbox Relay** | Batch Polling & Dispatch | Postgres `outbox_events` | 20 batches | 1 worker | **28.4 batches/s** | **44.30 ms** | **60.55 ms** | **60.55 ms** |
 
-> [!NOTE]
-> **Engineering Transparency**: In-memory microbenchmarks reflect data-structure execution in RAM without I/O (~260k RPS). Production payment processing over real PostgreSQL 16 achieves **2,801 ACID transfers/sec** (independent accounts) and **728 ACID transfers/sec** (single hot-account lock contention), with **8,151 RPS** achieved across the full HTTP REST API with Redis fraud evaluation.
-
-**Post-Benchmark Audit Result**:
-```
-[VERIFIED] PostgreSQL Reconciliation 100% Clean!
-Total Accounts: 51 | Total Transfers: 1,550 | Total Entries: 3,100 | TotalEntriesSum: 0 Paise | Mismatched: 0
-```
+> **Post-Benchmark Reconciliation Audit**: After running the full load test suite against PostgreSQL, the automated reconciliation engine verified:  
+> `Total Accounts: 51 | Total Transfers: 1,550 | Total Entries: 3,100 | TotalEntriesSum: 0 Paise | Mismatches: 0 | Clean: true`
 
 ---
 
-## Local Setup & Quick Start
+## Quickstart
 
 ### Prerequisites
-- Go 1.24+ (or Go 1.27)
-- Docker & Docker Compose (optional for full containerized stack)
+- Go 1.24+ (or Go 1.26)
+- Docker & Docker Compose
 
-### 1. Clone & Configure
+### 1. Run Everything via Docker Compose
 ```bash
-git clone https://github.com/messi/fintech-platform.git
+# Clone the repository
+git clone https://github.com/Rohan1857/fintech-platform.git
 cd fintech-platform
-cp .env.example .env
-```
 
-### 2. Run with Docker Compose (Full Stack)
-```bash
+# Boot up the full stack (API, PostgreSQL, Redis, Kafka, Prometheus, Grafana)
 docker compose up -d --build
 ```
-This starts:
-- **API Server**: `http://localhost:8080` (or `http://localhost:8090` standalone)
-- **PostgreSQL 16**: `localhost:5432`
+
+Services exposed:
+- **API Gateway**: `http://localhost:8080`
+- **PostgreSQL 16**: `localhost:5432` (User: `ledger`, DB: `ledger`)
 - **Redis 7**: `localhost:6379`
 - **Apache Kafka 3.7**: `localhost:9092`
 - **Prometheus**: `http://localhost:9090`
 - **Grafana**: `http://localhost:3000` (User: `admin`, Pass: `admin`)
 
-### 3. Run Standalone Development Mode
+### 2. Run the Verification Demo
+To see the full lifecycle (wallet creation, transfers, idempotent replays, fraud blocking, authorization holds, partial captures, refunds, and reconciliation):
+
 ```bash
-ALLOW_IN_MEMORY_DEV_MODE=true go run ./cmd/server/main.go
-```
-> [!WARNING]
-> Production mode fails fast if PostgreSQL, Redis, or Kafka are unavailable (`ALLOW_IN_MEMORY_DEV_MODE=false` by default). Setting `ALLOW_IN_MEMORY_DEV_MODE=true` is strictly required for offline local testing with in-memory stores to prevent accidental production data loss.
+# Linux / macOS
+chmod +x scripts/demo.sh
+./scripts/demo.sh
 
----
-
-## Interactive Demo Verification
-
-Run the reproducible end-to-end verification demo script:
-
-### On Windows PowerShell:
-```powershell
+# Windows PowerShell
 powershell -ExecutionPolicy Bypass -File scripts/demo.ps1
 ```
 
-### On Linux / macOS:
+### 3. Run the Benchmarking Tool
 ```bash
-chmod +x scripts/demo.sh
-./scripts/demo.sh
+go run ./cmd/loadtest/main.go
 ```
 
-### Verified Demo Execution Steps:
-1. **Health Check**: `GET /health` verified.
-2. **Wallet Creation**: Creates Alice wallet (500.00 INR = 50,000 Paise) and Bob merchant wallet (0.00 INR).
-3. **Double-Entry Transfer**: Executes direct transfer of 150.00 INR (15,000 Paise) from Alice to Bob with synchronous fraud check.
-4. **Idempotent Replay**: Re-sends transfer with same `Idempotency-Key`; returns original transaction without double-charging.
-5. **Fraud Engine Block**: Triggers high-value transfer (> 250,000 INR); rejected with `403 Forbidden` and audited.
-6. **Card Auth & Capture**: Places 50.00 INR authorization hold, captures partial 40.00 INR, releases remaining 10.00 INR.
-7. **Payment Refund**: Reverses 10.00 INR from captured payment back to buyer with balanced reversal entries.
-8. **Administrative Reconciliation**: Runs audit endpoint `POST /api/v1/reconciliation`; verifies sum of all entries is strictly 0.
-9. **Prometheus Scraping**: Fetches `payment_requests_total` and `fraud_evaluations_total` metrics from `/metrics`.
+### 4. Run the Test Suite with Race Detection
+```bash
+go test -race -v ./...
+```
 
 ---
 
-## Upstream Attribution & Original Contributions
+## API Reference & Usage
 
-### Upstream References
-1. **[mkmbhs/ledger](https://github.com/mkmbhs/ledger)** (Commit: `b9309ce2afe3b9a7d263b35c65afe242bd84fa9b`, MIT License)
-   - Contributed baseline double-entry models and PostgreSQL lock ordering concepts.
-2. **[apache261/Byakugan-core](https://github.com/apache261/Byakugan-core)** (Commit: `67a5adba3e9c35bef7be35d460006b1b40a3e92e`, Apache 2.0 License)
-   - Contributed rule evaluation DSL concepts and risk scoring semantics.
+All financial endpoints require the `Authorization: Bearer <API_AUTH_TOKEN>` header (default local token: `slice-secret-token-2026`) and an `Idempotency-Key` header.
 
-Full license texts are preserved in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+### Create Wallet
+```bash
+curl -X POST http://localhost:8080/api/v1/accounts \
+  -H "Authorization: Bearer slice-secret-token-2026" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "wallet_alice",
+    "currency": "INR",
+    "initial_balance": 50000
+  }'
+```
 
-### Original Contributions in this Repository
-- **Fixed Per-Leg Validation Flaw**: Implemented `AggregatePostings` grouping to validate net balance effects per account, resolving overdraft bugs in multi-leg postings.
-- **End-to-End Payment Lifecycle**: Engineered full authorization hold (`AuthorizeHold`), partial/full settlement (`CaptureHold`), cancellation (`VoidHold`), and refund reversal (`RefundTransfer`) workflows.
-- **Redis Sliding-Window Velocity Tracker**: Built sub-millisecond millisecond-precision velocity tracking using Redis sorted sets (`ZSET`).
-- **Fail-Closed Security Architecture**: Engineered synchronous fraud evaluation with explicit non-bypassable fail-closed fallback policies.
-- **Transactional Outbox & Idempotent Consumer**: Eliminated dual-write hazards between PostgreSQL and Kafka, paired with an idempotent consumer group and DLQ routing.
-- **Double-Entry Reconciliation Engine**: Built an administrative audit module verifying `∑ entries == 0` and `account.balance == ∑ account_entries`.
-- **Production REST Gateway**: Built structured slog logging, token bucket rate limiting, bearer authentication, timeout cancellation, and OpenAPI 3.0 documentation.
+### Direct Transfer
+```bash
+curl -X POST http://localhost:8080/api/v1/transfers \
+  -H "Authorization: Bearer slice-secret-token-2026" \
+  -H "Idempotency-Key: tx_req_1001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from_account_id": "wallet_alice",
+    "to_account_id": "wallet_bob",
+    "amount": 15000,
+    "currency": "INR"
+  }'
+```
+
+### Two-Step Card Payment (Authorize & Capture)
+```bash
+# 1. Authorize hold (reserves available balance)
+curl -X POST http://localhost:8080/api/v1/payments/authorize \
+  -H "Authorization: Bearer slice-secret-token-2026" \
+  -H "Idempotency-Key: hold_req_2001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "from_account_id": "wallet_alice",
+    "to_account_id": "merchant_bob",
+    "amount": 5000,
+    "currency": "INR",
+    "expires_in_sec": 3600
+  }'
+
+# 2. Capture partial or full amount (releases uncaptured hold balance)
+curl -X POST http://localhost:8080/api/v1/payments/capture \
+  -H "Authorization: Bearer slice-secret-token-2026" \
+  -H "Idempotency-Key: cap_req_2001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hold_id": "<HOLD_ID>",
+    "amount": 4000
+  }'
+```
+
+### Refund Transfer
+```bash
+curl -X POST http://localhost:8080/api/v1/payments/refund \
+  -H "Authorization: Bearer slice-secret-token-2026" \
+  -H "Idempotency-Key: ref_req_3001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transfer_id": "<TRANSFER_ID>",
+    "amount": 1000,
+    "reason": "customer return"
+  }'
+```
+
+### Administrative Ledger Reconciliation
+```bash
+curl -X POST http://localhost:8080/api/v1/reconciliation \
+  -H "Authorization: Bearer slice-secret-token-2026"
+```
+
+Response:
+```json
+{
+  "total_accounts": 3,
+  "total_transfers": 4,
+  "total_entries": 8,
+  "total_balance_minor": 0,
+  "total_entries_sum": 0,
+  "is_clean": true
+}
+```
 
 ---
 
-## Candidate Resume Bullets (Slice Backend Role)
+## Repository Layout
 
-1. **Fintech Payment Processing Core**: Architected a double-entry payment ledger and REST API in Go capable of 8,100+ end-to-end payment RPS (and 260k+ in-memory RPS) with sub-3ms p95 latency; implemented deterministic lexicographical row locking (`FOR UPDATE`) in PostgreSQL 16 sustaining 2,800+ ACID transfers/sec, eliminating concurrency deadlocks and ensuring zero floating-point rounding errors via integer minor units.
-2. **Real-Time Fraud & Risk Mitigation**: Engineered a synchronous pre-flight fraud engine evaluating velocity and high-value rules in sub-millisecond Redis 7 sliding windows (`ZSET`); enforced a strict fail-closed security architecture that halts suspicious transactions without silent approvals during dependency outages.
-3. **Event-Driven Resilience & Zero Dual-Writes**: Implemented the transactional outbox pattern to stream payment events to Apache Kafka without dual-write inconsistencies; built an idempotent consumer with Dead-Letter Queue (DLQ) routing, ensuring exactly-once business semantics under network partitions and replays.
+```
+.
+├── cmd/
+│   ├── loadtest/            # Multi-tier benchmarking harness
+│   └── server/              # Production API server binary
+├── deploy/
+│   ├── grafana/             # Pre-configured Grafana dashboard JSON
+│   └── prometheus/          # Prometheus scraping configuration
+├── docs/
+│   ├── api_examples.sh      # Executable curl examples
+│   ├── architecture.md      # Detailed system invariants and diagrams
+│   └── openapi.yaml         # Complete OpenAPI 3.0 specification
+├── internal/
+│   ├── api/                 # REST routing, auth, rate limiting, and handlers
+│   ├── events/              # Event types, Kafka publisher, and idempotent consumer
+│   ├── fraud/               # Risk engine, rules DSL, and Redis sliding-window tracker
+│   ├── ledger/              # Core domain models, aggregation, and balancing validation
+│   ├── metrics/             # Prometheus latency histograms and counters
+│   ├── outbox/              # Transactional outbox batch relay and DLQ router
+│   └── store/
+│       ├── memstore/        # In-memory storage implementation for local dev
+│       └── postgres/        # Production PostgreSQL storage via pgx/v5
+├── migrations/              # SQL schema migrations (idempotent constraints)
+├── pkg/
+│   └── money/               # Money type, minor unit math, formatting
+├── scripts/
+│   ├── demo.sh              # Bash verification demo script
+│   └── demo.ps1             # PowerShell verification demo script
+├── docker-compose.yml       # Full stack containerization
+└── AUDIT_REPORT.md          # Independent production readiness & adversarial audit
+```
+
+---
+
+## Upstream Attribution & Design References
+
+This repository builds upon ideas from two open-source projects:
+1. **[mkmbhs/ledger](https://github.com/mkmbhs/ledger)** (Pinned commit `b9309ce2`, MIT License): Reference data models and PostgreSQL row-locking concepts.
+   - *Key modifications*: Resolved a per-leg balance validation vulnerability by implementing net account aggregation (`AggregatePostings`). Added authorization holds (`AuthorizeHold`), partial captures (`CaptureHold`), automatic hold expiration (`ExpireHolds`), and refund reversals (`RefundTransfer`).
+2. **[apache261/Byakugan-core](https://github.com/apache261/Byakugan-core)** (Pinned commit `67a5adba`, Apache 2.0 License): Fraud rule evaluation concepts.
+   - *Key modifications*: Implemented an original Go fraud evaluation engine with Redis sliding-window sorted sets (`ZSET`), multi-factor scoring, and an explicit fail-closed safety policy.
+
+License texts are preserved in [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) for details.
+This project is licensed under the [MIT License](LICENSE).

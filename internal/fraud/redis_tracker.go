@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 	"github.com/google/uuid"
-	"github.com/messi/fintech-platform/pkg/money"
 	"github.com/redis/go-redis/v9"
 )
 

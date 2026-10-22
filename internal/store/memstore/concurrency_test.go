@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/messi/fintech-platform/internal/ledger"
-	"github.com/messi/fintech-platform/pkg/money"
+	"github.com/Rohan1857/fintech-platform/internal/ledger"
+	"github.com/Rohan1857/fintech-platform/pkg/money"
 )
 
 // Acceptance Test 1: 100 concurrent transfers from one funded account cannot overspend it.
