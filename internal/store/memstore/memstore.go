@@ -366,7 +366,7 @@ func (s *MemStore) CaptureHold(_ context.Context, req ledger.CaptureRequest) (le
 	// Idempotency check on transfer
 	if id, ok := s.byIdemKey[req.IdempotencyKey]; ok {
 		existing := s.transfers[id]
-		if existing.Type == ledger.TransferTypeHoldCapture && existing.Amount == req.Amount {
+		if existing.Type == ledger.TransferTypeHoldCapture && existing.Amount == req.Amount && s.holds[req.HoldID].CaptureTransferID == existing.ID {
 			return existing, nil
 		}
 		return ledger.Transfer{}, ledger.ErrIdempotencyConflict

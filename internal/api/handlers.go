@@ -159,6 +159,24 @@ func (s *Server) HandleTransfer(w http.ResponseWriter, r *http.Request) {
 		req.Currency = money.CurrencyINR
 	}
 
+	// A committed operation is already risk-checked. Replaying it must not
+	// depend on today's risk state or count as another payment attempt.
+	existing, found, err := s.store.GetTransferByKey(r.Context(), idemKey)
+	if err != nil {
+		handleLedgerError(w, err)
+		return
+	}
+	if found {
+		if existing.Type != ledger.TransferTypeStandard || !ledger.MatchesTransfer(existing, ledger.TransferRequest{
+			FromAccountID: req.FromAccountID, ToAccountID: req.ToAccountID, Amount: req.Amount, Currency: req.Currency,
+		}) {
+			handleLedgerError(w, ledger.ErrIdempotencyConflict)
+			return
+		}
+		writeJSON(w, http.StatusOK, existing)
+		return
+	}
+
 	// Synchronous Fraud Evaluation
 	if s.fraud != nil {
 		fraudReq := fraud.EvaluationRequest{
@@ -241,6 +259,27 @@ func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		req.Currency = money.CurrencyINR
 	}
 
+	existing, found, err := s.store.GetHoldByKey(r.Context(), idemKey)
+	if err != nil {
+		handleLedgerError(w, err)
+		return
+	}
+	if found {
+		account, err := s.store.GetAccount(r.Context(), existing.FromAccountID)
+		if err != nil {
+			handleLedgerError(w, err)
+			return
+		}
+		if account.Currency != req.Currency || !ledger.MatchesHold(existing, ledger.AuthorizeRequest{
+			FromAccountID: req.FromAccountID, ToAccountID: req.ToAccountID, Amount: req.Amount,
+		}) {
+			handleLedgerError(w, ledger.ErrIdempotencyConflict)
+			return
+		}
+		writeJSON(w, http.StatusCreated, existing)
+		return
+	}
+
 	// Synchronous Fraud Evaluation
 	if s.fraud != nil {
 		fraudReq := fraud.EvaluationRequest{
@@ -259,6 +298,16 @@ func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		if evalRes.Decision == fraud.DecisionReject {
 			writeJSON(w, http.StatusForbidden, map[string]any{
 				"error":         "authorization rejected by fraud risk engine",
+				"evaluation_id": evalRes.EvaluationID,
+				"decision":      evalRes.Decision,
+				"risk_score":    evalRes.RiskScore,
+				"reasons":       evalRes.Reasons,
+			})
+			return
+		}
+		if evalRes.Decision == fraud.DecisionReview {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":        "pending_review",
 				"evaluation_id": evalRes.EvaluationID,
 				"decision":      evalRes.Decision,
 				"risk_score":    evalRes.RiskScore,

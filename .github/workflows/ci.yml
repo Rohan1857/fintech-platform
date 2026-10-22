@@ -10,6 +10,9 @@ jobs:
   test:
     name: Build, Lint & Test
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://ledger:ledger_password@127.0.0.1:5432/ledger?sslmode=disable
+      REDIS_ADDR: 127.0.0.1:6379
 
     services:
       postgres:
@@ -64,7 +67,8 @@ jobs:
         env:
           GOSUMDB: off
         run: |
-          go test -race -v -timeout 5m ./...
+          # Integration packages reset shared tables in this ephemeral CI database.
+          go test -race -p 1 -count=1 -v -timeout 5m ./...
 
       - name: Build Binaries Verification
         env:

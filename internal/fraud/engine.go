@@ -242,7 +242,9 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluationRequest) (Evaluatio
 
 	// If transaction approved or reviewed, update velocity tracker synchronously
 	if decision == DecisionApprove || decision == DecisionReview {
-		_ = e.tracker.RecordTransaction(ctx, req.AccountID, req.BeneficiaryID, req.Amount, now)
+		if err := e.tracker.RecordTransaction(ctx, req.AccountID, req.BeneficiaryID, req.Amount, now); err != nil && e.cfg.FailClosed {
+			return e.buildFailClosedResult(ctx, evalID, req, "failed to record transaction velocity", now)
+		}
 	}
 
 	// Persist audit record

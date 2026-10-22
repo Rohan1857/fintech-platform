@@ -17,7 +17,7 @@ func getTestRedisClient(t *testing.T) *redis.Client {
 	t.Helper()
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
-		redisAddr = "127.0.0.1:6379"
+		t.Fatal("REDIS_ADDR must point to a disposable Redis instance")
 	}
 
 	client := redis.NewClient(&redis.Options{

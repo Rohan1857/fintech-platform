@@ -17,10 +17,8 @@ import (
 	"time"
 
 	"github.com/Rohan1857/fintech-platform/internal/api"
-	"github.com/Rohan1857/fintech-platform/internal/events"
 	"github.com/Rohan1857/fintech-platform/internal/fraud"
 	"github.com/Rohan1857/fintech-platform/internal/ledger"
-	"github.com/Rohan1857/fintech-platform/internal/outbox"
 	"github.com/Rohan1857/fintech-platform/internal/store/memstore"
 	"github.com/Rohan1857/fintech-platform/internal/store/postgres"
 	"github.com/Rohan1857/fintech-platform/pkg/money"
@@ -42,6 +40,40 @@ type BenchmarkResult struct {
 	P99Latency     time.Duration
 }
 
+// postHTTPTransfer uses the same contract as an API client and verifies that
+// the response represents a settled transfer, rather than a risk assessment.
+func postHTTPTransfer(ctx context.Context, client *http.Client, baseURL, token, key, from, to string, amount money.Money) error {
+	payload, err := json.Marshal(map[string]any{
+		"from_account_id": from, "to_account_id": to, "amount": amount, "currency": "INR",
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/v1/transfers", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", key)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("payment not completed: HTTP %d", resp.StatusCode)
+	}
+	var transfer ledger.Transfer
+	if err := json.NewDecoder(resp.Body).Decode(&transfer); err != nil {
+		return err
+	}
+	if transfer.ID == "" || transfer.Status != ledger.StatusPosted || transfer.IdempotencyKey != key || transfer.Amount != amount {
+		return fmt.Errorf("invalid completed transfer response: %+v", transfer)
+	}
+	return nil
+}
+
 func calculatePercentiles(latencies []time.Duration) (time.Duration, time.Duration, time.Duration) {
 	if len(latencies) == 0 {
 		return 0, 0, 0
@@ -55,6 +87,7 @@ func calculatePercentiles(latencies []time.Duration) (time.Duration, time.Durati
 
 func runBenchmark(tier, scenario, infra string, totalReqs int, concurrency int, runFn func(workerID, reqIdx int) error) BenchmarkResult {
 	latencies := make([]time.Duration, totalReqs)
+	succeeded := make([]bool, totalReqs)
 	var successCount atomic.Int32
 	var failCount atomic.Int32
 
@@ -74,8 +107,9 @@ func runBenchmark(tier, scenario, infra string, totalReqs int, concurrency int, 
 			for reqIdx := range reqCh {
 				t0 := time.Now()
 				err := runFn(workerID, reqIdx)
-				latencies[reqIdx] = time.Since(t0)
 				if err == nil {
+					latencies[reqIdx] = time.Since(t0)
+					succeeded[reqIdx] = true
 					successCount.Add(1)
 				} else {
 					failCount.Add(1)
@@ -87,8 +121,14 @@ func runBenchmark(tier, scenario, infra string, totalReqs int, concurrency int, 
 	wg.Wait()
 	duration := time.Since(start)
 
-	p50, p95, p99 := calculatePercentiles(latencies)
-	rps := float64(totalReqs) / duration.Seconds()
+	completedLatencies := make([]time.Duration, 0, successCount.Load())
+	for i, ok := range succeeded {
+		if ok {
+			completedLatencies = append(completedLatencies, latencies[i])
+		}
+	}
+	p50, p95, p99 := calculatePercentiles(completedLatencies)
+	rps := float64(successCount.Load()) / duration.Seconds()
 
 	return BenchmarkResult{
 		Tier:           tier,
@@ -106,7 +146,19 @@ func runBenchmark(tier, scenario, infra string, totalReqs int, concurrency int, 
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx := context.Background()
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		return fmt.Errorf("DATABASE_URL must point to a disposable benchmark database; accounts and events will be created")
+	}
+	prefix := fmt.Sprintf("bench_%d_", time.Now().UnixNano())
 
 	fmt.Println("=========================================================================================")
 	fmt.Println("  FINTECH PAYMENT & FRAUD PLATFORM - RIGOROUS RE-BENCHMARK AUDIT")
@@ -162,44 +214,39 @@ func main() {
 	allResults = append(allResults, resMemHot)
 
 	// -------------------------------------------------------------------------
-	// 2. TIER 2: REAL POSTGRESQL 16 LEDGER BENCHMARK
+	// 2. TIER 2: REAL POSTGRESQL LEDGER BENCHMARK
 	// -------------------------------------------------------------------------
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://ledger:ledger_password@127.0.0.1:5432/ledger?sslmode=disable"
-	}
-
 	pgConfig, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
-		fmt.Printf("Skipping Tier 2/3: cannot parse db URL: %v\n", err)
-		return
+		return fmt.Errorf("parse database URL: %w", err)
 	}
 	pgConfig.MaxConns = 50
 	pgPool, err := pgxpool.NewWithConfig(ctx, pgConfig)
-	if err != nil || pgPool.Ping(ctx) != nil {
-		fmt.Printf("Skipping Tier 2/3: PostgreSQL not reachable: %v\n", err)
-		return
+	if err != nil {
+		return fmt.Errorf("create database pool: %w", err)
 	}
 	defer pgPool.Close()
-
-	// Clean tables
-	_, _ = pgPool.Exec(ctx, "TRUNCATE TABLE processed_events, fraud_evaluations, outbox_events, refunds, holds, entries, transfers, accounts CASCADE;")
+	if err := pgPool.Ping(ctx); err != nil {
+		return fmt.Errorf("database unavailable: %w", err)
+	}
 
 	pgS := postgres.New(pgPool)
 	fmt.Println("[RUNNING TIER 2] Real PostgreSQL Ledger (ACID Row-Locks & Outbox Inserts)...")
 	pgNumAccounts := 50
 	for i := 0; i < pgNumAccounts; i++ {
-		_ = pgS.CreateAccount(ctx, ledger.Account{
-			ID:       fmt.Sprintf("pg_wallet_%03d", i),
+		if err := pgS.CreateAccount(ctx, ledger.Account{
+			ID:       fmt.Sprintf("%spg_wallet_%03d", prefix, i),
 			Currency: money.CurrencyINR,
 			Balance:  100000000,
-		})
+		}); err != nil {
+			return fmt.Errorf("seed ledger account: %w", err)
+		}
 	}
 
 	resPGOrd := runBenchmark("Tier 2: Real PostgreSQL", "Independent Account Transfers", "PostgreSQL 16 (pgxpool 50)", 1000, 20, func(workerID, reqIdx int) error {
-		src := fmt.Sprintf("pg_wallet_%03d", reqIdx%pgNumAccounts)
-		dst := fmt.Sprintf("pg_wallet_%03d", (reqIdx+1)%pgNumAccounts)
-		key := fmt.Sprintf("pg_ord_tx_%d", reqIdx)
+		src := fmt.Sprintf("%spg_wallet_%03d", prefix, reqIdx%pgNumAccounts)
+		dst := fmt.Sprintf("%spg_wallet_%03d", prefix, (reqIdx+1)%pgNumAccounts)
+		key := fmt.Sprintf("%spg_ord_tx_%d", prefix, reqIdx)
 		_, err := pgS.ApplyTransfer(ctx, ledger.TransferRequest{
 			IdempotencyKey: key,
 			FromAccountID:  src,
@@ -212,11 +259,11 @@ func main() {
 	allResults = append(allResults, resPGOrd)
 
 	resPGHot := runBenchmark("Tier 2: Real PostgreSQL", "Contended Hot-Account Transfers", "PostgreSQL 16 (pgxpool 50)", 500, 10, func(workerID, reqIdx int) error {
-		dst := fmt.Sprintf("pg_wallet_%03d", (reqIdx%(pgNumAccounts-1))+1)
-		key := fmt.Sprintf("pg_hot_tx_%d", reqIdx)
+		dst := fmt.Sprintf("%spg_wallet_%03d", prefix, (reqIdx%(pgNumAccounts-1))+1)
+		key := fmt.Sprintf("%spg_hot_tx_%d", prefix, reqIdx)
 		_, err := pgS.ApplyTransfer(ctx, ledger.TransferRequest{
 			IdempotencyKey: key,
-			FromAccountID:  "pg_wallet_000",
+			FromAccountID:  prefix + "pg_wallet_000",
 			ToAccountID:    dst,
 			Amount:         10,
 			Currency:       money.CurrencyINR,
@@ -235,101 +282,69 @@ func main() {
 	rClient := redis.NewClient(&redis.Options{Addr: redisAddr})
 	defer rClient.Close()
 
-	if rClient.Ping(ctx).Err() == nil {
-		fmt.Println("[RUNNING TIER 3] Full HTTP Payment API (REST + Auth + Redis Fraud + PostgreSQL)...")
-		rTracker := fraud.NewRedisVelocityTracker(rClient)
-		pgAuditor := fraud.NewPostgresAuditStore(pgPool)
-		fCfg := fraud.DefaultConfig()
-		fCfg.FailClosed = true
-		fraudEngine := fraud.NewEngine(fCfg, rTracker, pgAuditor)
-
-		apiServer := api.NewServer(pgS, fraudEngine, pgAuditor)
-		routerCfg := api.RouterConfig{
-			AuthToken:      "benchmark-auth-token-2026",
-			RateLimitRate:  100000, // disable rate limit bottleneck during loadtest
-			RateLimitBurst: 100000,
-			RequestTimeout: 10 * time.Second,
-			Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		}
-		handler := api.NewRouter(apiServer, routerCfg)
-		ts := httptest.NewServer(handler)
-		defer ts.Close()
-
-		httpClient := &http.Client{
-			Timeout: 5 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-			},
-		}
-
-		resHTTP := runBenchmark("Tier 3: HTTP API", "POST /api/v1/transfers (End-to-End)", "HTTP/1.1 + Redis + PG", 500, 20, func(workerID, reqIdx int) error {
-			src := fmt.Sprintf("pg_wallet_%03d", reqIdx%pgNumAccounts)
-			dst := fmt.Sprintf("pg_wallet_%03d", (reqIdx+1)%pgNumAccounts)
-			key := fmt.Sprintf("http_tx_%d", reqIdx)
-
-			payload, _ := json.Marshal(map[string]any{
-				"idempotency_key": key,
-				"from_account_id": src,
-				"to_account_id":   dst,
-				"amount":          50,
-				"currency":        "INR",
-			})
-
-			req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/api/v1/transfers", bytes.NewReader(payload))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer benchmark-auth-token-2026")
-
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("unexpected status %d", resp.StatusCode)
-			}
-			return nil
-		})
-		allResults = append(allResults, resHTTP)
+	if err := rClient.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("Redis unavailable: %w", err)
 	}
-
-	// -------------------------------------------------------------------------
-	// 4. TIER 4: OUTBOX RELAY DISPATCH THROUGHPUT
-	// -------------------------------------------------------------------------
-	fmt.Println("[RUNNING TIER 4] Transactional Outbox Relay Batch Dispatch...")
-	memPub := events.NewMemPublisher()
-	relayCfg := outbox.Config{
-		BatchSize:   100,
-		MaxRetries:  3,
-		TopicEvents: "payment.events",
-		TopicDLQ:    "payment.dlq",
+	fmt.Println("[RUNNING TIER 3] HTTP payments: 500 fresh sender/recipient pairs, default fraud rules enabled")
+	// Setup is outside the measured interval. Each sender submits one payment,
+	// so this scenario measures approved payments without disabling risk rules.
+	const httpRequests = 500
+	for i := 0; i < httpRequests; i++ {
+		for _, account := range []ledger.Account{
+			{ID: fmt.Sprintf("%shttp_from_%d", prefix, i), Currency: money.CurrencyINR, Balance: 10000},
+			{ID: fmt.Sprintf("%shttp_to_%d", prefix, i), Currency: money.CurrencyINR},
+		} {
+			if err := pgS.CreateAccount(ctx, account); err != nil {
+				return fmt.Errorf("seed HTTP account: %w", err)
+			}
+		}
 	}
-	relay := outbox.NewRelay(pgPool, memPub, relayCfg)
-
-	resOutbox := runBenchmark("Tier 4: Outbox Relay", "ProcessBatch Polling & Dispatch", "PostgreSQL outbox_events", 20, 1, func(workerID, reqIdx int) error {
-		_, err := relay.ProcessBatch(ctx)
-		return err
+	tracker := fraud.NewRedisVelocityTracker(rClient)
+	auditor := fraud.NewPostgresAuditStore(pgPool)
+	engine := fraud.NewEngine(fraud.DefaultConfig(), tracker, auditor)
+	cfg := api.DefaultRouterConfig()
+	cfg.AuthToken = "benchmark-auth-token-2026"
+	cfg.RateLimitRate, cfg.RateLimitBurst = 100000, 100000
+	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	ts := httptest.NewServer(api.NewRouter(api.NewServer(pgS, engine, auditor), cfg))
+	defer ts.Close()
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{MaxIdleConns: 100, MaxIdleConnsPerHost: 100},
+	}
+	defer client.CloseIdleConnections()
+	resHTTP := runBenchmark("Tier 3: HTTP API", "Approved fresh-account payments", "HTTP + Redis + PostgreSQL", httpRequests, 20, func(_, i int) error {
+		return postHTTPTransfer(ctx, client, ts.URL, cfg.AuthToken,
+			fmt.Sprintf("%shttp_tx_%d", prefix, i), fmt.Sprintf("%shttp_from_%d", prefix, i),
+			fmt.Sprintf("%shttp_to_%d", prefix, i), 50)
 	})
-	allResults = append(allResults, resOutbox)
+	allResults = append(allResults, resHTTP)
 
 	// -------------------------------------------------------------------------
 	// PRINT HONEST BENCHMARK AUDIT TABLE
 	// -------------------------------------------------------------------------
-	fmt.Printf("\n%-24s | %-32s | %-24s | %-8s | %-12s | %-10s | %-10s | %-10s\n",
-		"Tier", "Scenario", "Infrastructure", "Requests", "Throughput", "p50", "p95", "p99")
-	fmt.Println("-------------------------------------------------------------------------------------------------------------------------------------------------------------")
+	fmt.Println("Completed/s and latency percentiles include SUCCESSFUL operations only; setup excluded.")
+	fmt.Printf("%-24s | %-34s | %8s | %8s | %12s | %10s | %10s | %10s\n",
+		"Tier", "Scenario", "Success", "Failed", "Completed/s", "p50", "p95", "p99")
+	failed := false
 	for _, r := range allResults {
-		fmt.Printf("%-24s | %-32s | %-24s | %-8d | %8.1f rps | %10v | %10v | %10v\n",
-			r.Tier, r.Scenario, r.Infrastructure, r.TotalRequests, r.ThroughputRPS, r.P50Latency, r.P95Latency, r.P99Latency)
+		fmt.Printf("%-24s | %-34s | %8d | %8d | %12.1f | %10v | %10v | %10v\n",
+			r.Tier, r.Scenario, r.SuccessCount, r.FailCount, r.ThroughputRPS, r.P50Latency, r.P95Latency, r.P99Latency)
+		if r.FailCount > 0 {
+			failed = true
+		}
 	}
-	fmt.Println("-------------------------------------------------------------------------------------------------------------------------------------------------------------")
 
 	// Final Reconciliation Verification
 	rep, err := pgS.Reconcile(ctx)
 	if err != nil || !rep.IsClean {
-		fmt.Printf("\n[ALERT] PostgreSQL Post-Benchmark Reconciliation Dirty: %+v, Err=%v\n", rep, err)
+		return fmt.Errorf("post-benchmark reconciliation failed: %+v, err=%v", rep, err)
 	} else {
 		fmt.Printf("\n[VERIFIED] PostgreSQL Reconciliation 100%% Clean! Total Accounts=%d, Total Transfers=%d, Total Entries=%d, TotalEntriesSum=%d\n",
 			rep.TotalAccounts, rep.TotalTransfers, rep.TotalEntries, rep.TotalEntriesSum)
 	}
+	if failed {
+		return fmt.Errorf("benchmark had failed operations; inspect Success/Failed columns")
+	}
+	return nil
 }

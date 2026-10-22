@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -154,7 +155,10 @@ func TestConsumer_AllRequiredLifecycleEvents(t *testing.T) {
 }
 
 func TestConsumer_RealPostgres_IdempotencyAndNoDuplicates(t *testing.T) {
-	dbURL := "postgres://ledger:ledger_password@127.0.0.1:5432/ledger?sslmode=disable"
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Fatal("DATABASE_URL must point to a disposable test database (fixtures truncate tables)")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 

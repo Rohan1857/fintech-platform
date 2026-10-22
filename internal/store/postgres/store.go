@@ -536,26 +536,14 @@ func (s *Store) CaptureHold(ctx context.Context, req ledger.CaptureRequest) (led
 
 	var result ledger.Transfer
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		existing, ok, err := s.readTransferByKeyTx(ctx, tx, req.IdempotencyKey)
-		if err != nil {
-			return err
-		}
-		if ok {
-			if existing.Type == ledger.TransferTypeHoldCapture && existing.Amount == req.Amount {
-				result = existing
-				return nil
-			}
-			return ledger.ErrIdempotencyConflict
-		}
-
 		// Lock hold row
 		var h ledger.Hold
 		var amount, captured int64
 		var expiresAt *time.Time
-		err = tx.QueryRow(ctx, `
-			SELECT id, idempotency_key, from_account_id, to_account_id, amount, captured, status, created_at, expires_at
+		err := tx.QueryRow(ctx, `
+			SELECT id, idempotency_key, from_account_id, to_account_id, amount, captured, status, created_at, expires_at, COALESCE(capture_transfer_id, '')
 			FROM holds WHERE id = $1 FOR UPDATE`, req.HoldID).Scan(
-			&h.ID, &h.IdempotencyKey, &h.FromAccountID, &h.ToAccountID, &amount, &captured, &h.Status, &h.CreatedAt, &expiresAt,
+			&h.ID, &h.IdempotencyKey, &h.FromAccountID, &h.ToAccountID, &amount, &captured, &h.Status, &h.CreatedAt, &expiresAt, &h.CaptureTransferID,
 		)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -567,6 +555,19 @@ func (s *Store) CaptureHold(ctx context.Context, req ledger.CaptureRequest) (led
 		h.Captured = money.Money(captured)
 		if expiresAt != nil {
 			h.ExpiresAt = *expiresAt
+		}
+
+		// Read after the hold lock: a concurrent capture may just have committed.
+		existing, ok, err := s.readTransferByKeyTx(ctx, tx, req.IdempotencyKey)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if existing.Type == ledger.TransferTypeHoldCapture && existing.Amount == req.Amount && h.CaptureTransferID == existing.ID {
+				result = existing
+				return nil
+			}
+			return ledger.ErrIdempotencyConflict
 		}
 
 		if h.Status != ledger.HoldActive {

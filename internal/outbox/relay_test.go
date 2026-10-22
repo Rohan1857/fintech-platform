@@ -19,7 +19,7 @@ func getTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://ledger:ledger_password@127.0.0.1:5432/ledger?sslmode=disable"
+		t.Fatal("DATABASE_URL must point to a disposable test database (fixtures truncate tables)")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
